@@ -955,3 +955,14 @@ int key_event(SDL_vnc *vnc, bool pressed, SDL_Keysym sym) {
 
     to_server(vnc->socket, buf, 8);
 }
+
+SDL_Window *create_window_for_connection(SDL_vnc *vnc, char *title, int x,
+        int y, Uint32 flags) {
+
+    vnc->window = SDL_CreateWindow(title, x, y, vnc->server_details.w,
+            vnc->server_details.h, flags);
+
+    SDL_ShowCursor(SDL_DISABLE);
+
+    return vnc->window;
+}

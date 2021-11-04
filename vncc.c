@@ -6,21 +6,15 @@ int main(int argc, char **argv) {
 
     SDL_Init(SDL_INIT_VIDEO);
 
-    SDL_Renderer *rend;
-    SDL_Window *wind;
-    SDL_CreateWindowAndRenderer(800, 600, 0, &wind, &rend);
-    SDL_Rect window_size;
-    window_size.x = 0;
-    window_size.y = 0;
-    window_size.w = 800;
-    window_size.h = 600;
-
-    SDL_ShowCursor(SDL_DISABLE);
-
     SDL_vnc vnc;
     printf("trying to make connection\n");
     init_vnc_connection(&vnc, "127.0.0.1", 5905, 60);
     printf("connection succeeded!\n");
+
+    SDL_Window *wind = create_window_for_connection(&vnc, NULL,
+            SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 0);
+
+    SDL_Renderer *rend = SDL_CreateRenderer(wind, -1, 0);
 
     bool running = true;
 
@@ -62,7 +56,7 @@ int main(int argc, char **argv) {
         }
 
         SDL_Texture *text = SDL_CreateTextureFromSurface(rend, vnc.surface);
-        SDL_RenderCopy(rend, text, &window_size, NULL);
+        SDL_RenderCopy(rend, text, NULL, NULL);
         SDL_DestroyTexture(text);
 
         SDL_RenderPresent(rend);

@@ -55,6 +55,7 @@ typedef struct {
     SDL_Thread *thread;
     unsigned int fps;
     vnc_colour_map colour_map;
+    SDL_Window *window;
 } SDL_vnc;
 
 typedef enum {
@@ -73,6 +74,9 @@ SDL_vnc_result init_vnc_connection(SDL_vnc *vnc, char *host, unsigned int port,
         unsigned int fps);
 
 int wait_on_vnc_connection(SDL_vnc *vnc);
+
+SDL_Window *create_window_for_connection(SDL_vnc *vnc, char *title, int x,
+        int y, Uint32 flags);
 
 int key_event(SDL_vnc *vnc, bool pressed, SDL_Keysym key);
 int pointer_event(SDL_vnc *vnc, uint32_t button_mask, uint16_t x, uint16_t y,
