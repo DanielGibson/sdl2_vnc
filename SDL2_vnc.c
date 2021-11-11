@@ -1,9 +1,5 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 
@@ -22,66 +18,83 @@ typedef enum {
     RFB_37 = 7,
     RFB_38 = 8,
     RFB_OTHER
-} RFB_version;
+} VNC_RFBProtocolVersion;
+
+typedef enum {
+    FRAME_BUFFER_UPDATE = 0,
+    SET_COLOUR_MAP_ENTRIES = 1,
+    BELL = 2,
+    SERVER_CUT_TEXT = 3
+} VNC_ServerMessageType;
+
+typedef enum {
+    RAW = 0,
+    COPY_RECT = 1,
+    RRE = 2,
+    HEXTILE = 5,
+    TRLE = 15,
+    ZRLE = 16,
+
+    PSEUDO_CONTINUOUS_UPDATES = 150,
+    PSEUDO_CURSOR = -239,
+    PSEUDO_DESKTOP_SIZE = -223
+} VNC_RectangleEncodingMethod;
+
+typedef struct {
+    SDL_Rect r;
+    VNC_RectangleEncodingMethod e;
+} VNC_RectangleHeader;
+
+int VNC_SHUTDOWN;
 
 #define RFB_33_STR "RFB 003.003\n"
 #define RFB_37_STR "RFB 003.007\n"
 #define RFB_38_STR "RFB 003.008\n"
 
-#define debug(...) fprintf(stderr, __VA_ARGS__)
-#define warn(...) fprintf(stderr, __VA_ARGS__)
+#define debug(...) SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, __VA_ARGS__)
+#define info(...) SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, __VA_ARGS__)
+#define warn(...) SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, __VA_ARGS__)
 
-uint16_t swap_endianness_u16b(uint16_t x) {
-    uint16_t a = x;
-    uint16_t b = 0;
+char *VNC_ErrorString(VNC_Result err) {
+    switch (err) {
 
-    uint8_t *pa = (uint8_t *) &a;
-    uint8_t *pb = (uint8_t *) &b;
+        case VNC_OK:
+            return "no error";
 
-    pb[0] = pa[1];
-    pb[1] = pa[0];
+        case VNC_ERROR_OOM:
+            return "could not allocate required memory";
 
-    return b;
+        case VNC_ERROR_COULD_NOT_CREATE_SOCKET:
+            return "could not create socket";
+
+        case VNC_ERROR_COULD_NOT_CONNECT:
+            return "could not connect to VNC server";
+
+        case VNC_ERROR_SERVER_DISCONNECT:
+            return "server disconnected";
+
+        case VNC_ERROR_UNSUPPORTED_SECURITY_PROTOCOLS:
+            return "unsupported security protocols";
+
+        case VNC_ERROR_SECURITY_HANDSHAKE_FAILED:
+            return "security handshake failed";
+
+        case VNC_ERROR_UNIMPLEMENTED:
+            return "feature unimplemented";
+
+        default:
+            return "unknown error";
+    }
 }
 
-uint32_t swap_endianness_u32b(uint32_t x) {
-    uint32_t a = x;
-    uint32_t b = 0;
-
-    uint8_t *pa = (uint8_t *) &a;
-    uint8_t *pb = (uint8_t *) &b;
-
-    pb[0] = pa[3];
-    pb[1] = pa[2];
-    pb[2] = pa[1];
-    pb[3] = pa[0];
-
-    return b;
-}
-
-int32_t swap_endianness_32b(int32_t x) {
-    int32_t a = x;
-    int32_t b = 0;
-
-    int8_t *pa = (int8_t *) &a;
-    int8_t *pb = (int8_t *) &b;
-
-    pb[0] = pa[3];
-    pb[1] = pa[2];
-    pb[2] = pa[1];
-    pb[3] = pa[0];
-
-    return b;
-}
-
-int init_vnc_buffer(vnc_buf *buffer) {
+int VNC_InitBuffer(VNC_ConnectionBuffer *buffer) {
     buffer->size = VNC_INITIAL_BUFSIZE;
-    buffer->data = malloc(buffer->size);
+    buffer->data = SDL_malloc(buffer->size);
 
     return buffer->data == NULL;
 }
 
-int create_socket() {
+int VNC_CreateSocket(void) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
 
     struct timeval t;
@@ -92,7 +105,7 @@ int create_socket() {
     return sock;
 }
 
-int vnc_connect(SDL_vnc *vnc, char *host, uint port) {
+int VNC_Connect(VNC_Connection *vnc, char *host, uint port) {
     struct sockaddr_in address;
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
@@ -100,24 +113,24 @@ int vnc_connect(SDL_vnc *vnc, char *host, uint port) {
     return connect(vnc->socket, (struct sockaddr *) &address, sizeof(address));
 }
 
-int resize_vnc_buffer(vnc_buf buffer, size_t n) {
+int VNC_ResizeBuffer(VNC_ConnectionBuffer buffer, size_t n) {
     buffer.data = realloc(buffer.data, n);
 
     return !buffer.data;
 }
 
-int assure_buffer_size(vnc_buf buffer, size_t n) {
+int VNC_AssureBufferSize(VNC_ConnectionBuffer buffer, size_t n) {
     if (n > buffer.size) {
-        return resize_vnc_buffer(buffer, n);
+        return VNC_ResizeBuffer(buffer, n);
     }
 
     return 0;
 }
 
-int from_server(int socket, void *buffer, size_t n, bool spin) {
+int VNC_FromServer(int socket, void *buffer, size_t n) {
 
     size_t left_to_read = n;
-    void *needle = buffer;
+    char *needle = buffer;
 
     while (left_to_read > 0) {
         ssize_t bytes_read = recv(socket, needle, left_to_read, 0);
@@ -126,7 +139,7 @@ int from_server(int socket, void *buffer, size_t n, bool spin) {
             return -1;
         }
 
-        if (!spin && bytes_read == 0) {
+        if (bytes_read == 0) {
             return n - left_to_read;
         }
 
@@ -137,13 +150,13 @@ int from_server(int socket, void *buffer, size_t n, bool spin) {
     return n;
 }
 
-int server_to_vnc_buffer(SDL_vnc *vnc, size_t n, bool spin) {
-    assure_buffer_size(vnc->buffer, n);
-    return from_server(vnc->socket, vnc->buffer.data, n, spin);
+int VNC_ServerToBuffer(VNC_Connection *vnc, size_t n) {
+    VNC_AssureBufferSize(vnc->buffer, n);
+    return VNC_FromServer(vnc->socket, vnc->buffer.data, n);
 }
 
-int assure_scratch_buffer_size(SDL_vnc *vnc, size_t w, size_t h) {
-    vnc_server_details details = vnc->server_details;
+int VNC_AssureScratchBufferSize(VNC_Connection *vnc, size_t w, size_t h) {
+    VNC_ServerDetails details = vnc->server_details;
 
     if (vnc->scratch_buffer && vnc->scratch_buffer->w == w &&
             vnc->scratch_buffer->h == h) {
@@ -164,8 +177,8 @@ int assure_scratch_buffer_size(SDL_vnc *vnc, size_t w, size_t h) {
     return 0;
 }
 
-int server_to_scratch_buffer(SDL_vnc *vnc, size_t w, size_t h, bool spin) {
-    assure_scratch_buffer_size(vnc, w, h);
+int VNC_ServerToScratchBuffer(VNC_Connection *vnc, size_t w, size_t h) {
+    VNC_AssureScratchBufferSize(vnc, w, h);
 
     size_t pixel_data_size = w * h * vnc->server_details.fmt.bpp / 8;
 
@@ -173,8 +186,7 @@ int server_to_scratch_buffer(SDL_vnc *vnc, size_t w, size_t h, bool spin) {
         SDL_LockSurface(vnc->scratch_buffer);
     }
 
-    from_server(vnc->socket, vnc->scratch_buffer->pixels, pixel_data_size,
-            spin);
+    VNC_FromServer(vnc->socket, vnc->scratch_buffer->pixels, pixel_data_size);
 
     if (SDL_MUSTLOCK(vnc->scratch_buffer)) {
         SDL_UnlockSurface(vnc->scratch_buffer);
@@ -183,11 +195,11 @@ int server_to_scratch_buffer(SDL_vnc *vnc, size_t w, size_t h, bool spin) {
     return 0;
 }
 
-int to_server(int socket, void *data, size_t n) {
+int VNC_ToServer(int socket, void *data, size_t n) {
     return send(socket, data, n, 0);
 }
 
-RFB_version deduce_version(char *str) {
+VNC_RFBProtocolVersion VNC_DeduceRFBProtocolVersion(char *str) {
     if (!strncmp(str, RFB_33_STR, 12)) {
         return RFB_33;
 
@@ -202,7 +214,7 @@ RFB_version deduce_version(char *str) {
     }
 }
 
-char *rfb_ver_to_str(RFB_version ver) {
+char *VNC_RFBVersionString(VNC_RFBProtocolVersion ver) {
     switch (ver) {
         case RFB_33:
             return RFB_33_STR;
@@ -218,18 +230,18 @@ char *rfb_ver_to_str(RFB_version ver) {
     }
 }
 
-RFB_version get_server_version(SDL_vnc *vnc) {
+VNC_RFBProtocolVersion VNC_ReceiveServerVersion(VNC_Connection *vnc) {
     char protocol_string[12];
-    from_server(vnc->socket, protocol_string, 12, true);
+    VNC_FromServer(vnc->socket, protocol_string, 12);
 
-    RFB_version ver = deduce_version(protocol_string);
+    VNC_RFBProtocolVersion ver = VNC_DeduceRFBProtocolVersion(protocol_string);
 
     return ver;
 }
 
-int send_client_version(SDL_vnc *vnc, RFB_version ver) {
-    char *ver_str = rfb_ver_to_str(ver);
-    return to_server(vnc->socket, ver_str, 12);
+int VNC_SendClientVersion(VNC_Connection *vnc, VNC_RFBProtocolVersion ver) {
+    char *ver_str = VNC_RFBVersionString(ver);
+    return VNC_ToServer(vnc->socket, ver_str, 12);
 }
 
 typedef enum {
@@ -238,137 +250,144 @@ typedef enum {
     RFB_SECURITY_VNC_AUTH = 2
 } RFB_security_protocol;
 
-bool look_for_no_auth(uint8_t *options, size_t n) {
+SDL_bool VNC_NoAuthSupported(Uint8 *options, size_t n) {
     for (uint i = 0; i < n; i++) {
         if (options[i] == RFB_SECURITY_NONE) {
-            return true;
+            return SDL_TRUE;
         }
     }
 
-    return false;
+    return SDL_FALSE;
 }
 
-int negotiate_security_33(SDL_vnc *vnc) {
-    return SDL_VNC_ERROR_UNIMPLEMENTED;
+int VNC_NegotiateSecurity33(VNC_Connection *vnc) {
+    return VNC_ERROR_UNIMPLEMENTED;
 }
 
-int negotiate_security_37(SDL_vnc *vnc) {
-    return SDL_VNC_ERROR_UNIMPLEMENTED;
+int VNC_NegotiateSecurity37(VNC_Connection *vnc) {
+    return VNC_ERROR_UNIMPLEMENTED;
 }
 
-int negotiate_security_38(SDL_vnc *vnc) {
-    uint8_t security_protocol_count;
-    from_server(vnc->socket, &security_protocol_count, 1, true);
+int VNC_NegotiateSecurity38(VNC_Connection *vnc) {
+    Uint8 security_protocol_count;
+    VNC_FromServer(vnc->socket, &security_protocol_count, 1);
 
     if (!security_protocol_count) {
-        return SDL_VNC_ERROR_SERVER_DISCONNECT;
+        return VNC_ERROR_SERVER_DISCONNECT;
     }
 
-    server_to_vnc_buffer(vnc, security_protocol_count, true);
+    VNC_ServerToBuffer(vnc, security_protocol_count);
 
-    bool no_security_supported =
-        look_for_no_auth(vnc->buffer.data, security_protocol_count);
+    SDL_bool no_security_supported =
+        VNC_NoAuthSupported(vnc->buffer.data, security_protocol_count);
 
     if (!no_security_supported) {
-        return SDL_VNC_ERROR_UNSUPPORTED_SECURITY_PROTOCOLS;
+        return VNC_ERROR_UNSUPPORTED_SECURITY_PROTOCOLS;
     }
 
     RFB_security_protocol no_sec = RFB_SECURITY_NONE;
-    to_server(vnc->socket, &no_sec, 1);
+    VNC_ToServer(vnc->socket, &no_sec, 1);
 
-    uint32_t security_handshake_error;
-    from_server(vnc->socket, &security_handshake_error, 4, true);
+    Uint32 security_handshake_error;
+    VNC_FromServer(vnc->socket, &security_handshake_error, 4);
 
     if (security_handshake_error) {
-        return SDL_VNC_ERROR_SECURITY_HANDSHAKE_FAILED;
+        return VNC_ERROR_SECURITY_HANDSHAKE_FAILED;
     }
 
-    return OK;
-}
-
-int negotiate_security(SDL_vnc *vnc, RFB_version ver) {
-    switch (ver) {
-        case RFB_33:
-            return negotiate_security_33(vnc);
-
-        case RFB_37:
-            return negotiate_security_37(vnc);
-
-        case RFB_38:
-            return negotiate_security_38(vnc);
-
-        default:
-            return negotiate_security_33(vnc);
-    }
-}
-
-int client_initialisation(SDL_vnc *vnc) {
-    uint8_t shared_flag = 0;
-    to_server(vnc->socket, &shared_flag, 1);
     return 0;
 }
 
-int server_initialisation(SDL_vnc *vnc) {
-    server_to_vnc_buffer(vnc, 24, true);
+int VNC_NegotiateSecurity(VNC_Connection *vnc, VNC_RFBProtocolVersion ver) {
+    switch (ver) {
+        case RFB_33:
+            return VNC_NegotiateSecurity33(vnc);
 
-    uint16_t *framebuffer_info = (uint16_t *) vnc->buffer.data;
-    vnc->server_details.w = swap_endianness_u16b(framebuffer_info[0]);
-    vnc->server_details.h = swap_endianness_u16b(framebuffer_info[1]);
+        case RFB_37:
+            return VNC_NegotiateSecurity37(vnc);
 
-    uint8_t *server_pixel_info = (uint8_t *) &framebuffer_info[2];
+        case RFB_38:
+            return VNC_NegotiateSecurity38(vnc);
+
+        default:
+            return VNC_NegotiateSecurity33(vnc);
+    }
+}
+
+int VNC_ClientInitialisation(VNC_Connection *vnc) {
+    Uint8 shared_flag = 0;
+    VNC_ToServer(vnc->socket, &shared_flag, 1);
+    return 0;
+}
+
+int VNC_ServerInitialisation(VNC_Connection *vnc) {
+    VNC_ServerToBuffer(vnc, 24);
+
+    Uint16 *framebuffer_info = (Uint16 *) vnc->buffer.data;
+    vnc->server_details.w = SDL_SwapBE16(framebuffer_info[0]);
+    vnc->server_details.h = SDL_SwapBE16(framebuffer_info[1]);
+
+    Uint8 *server_pixel_info = (Uint8 *) &framebuffer_info[2];
     vnc->server_details.fmt.bpp = server_pixel_info[0];
     vnc->server_details.fmt.depth = server_pixel_info[1];
     vnc->server_details.fmt.is_big_endian = server_pixel_info[2];
-    vnc->server_details.fmt.is_true_colour = server_pixel_info[3];
+    vnc->server_details.fmt.is_true_color = server_pixel_info[3];
 
-    // always in big endian order
-    uint16_t *server_colour_maxima = (uint16_t *) &server_pixel_info[4];
-    vnc->server_details.fmt.red_max = swap_endianness_u16b(server_colour_maxima[0]);
-    vnc->server_details.fmt.green_max = swap_endianness_u16b(server_colour_maxima[1]);
-    vnc->server_details.fmt.blue_max = swap_endianness_u16b(server_colour_maxima[2]);
+    Uint16 *server_color_maxima = (Uint16 *) &server_pixel_info[4];
+    vnc->server_details.fmt.red_max = SDL_SwapBE16(server_color_maxima[0]);
+    vnc->server_details.fmt.green_max = SDL_SwapBE16(server_color_maxima[1]);
+    vnc->server_details.fmt.blue_max = SDL_SwapBE16(server_color_maxima[2]);
 
-    uint8_t *server_colour_shifts = (uint8_t *) &server_colour_maxima[3];
-    vnc->server_details.fmt.red_shift = server_colour_shifts[0];
-    vnc->server_details.fmt.green_shift = server_colour_shifts[1];
-    vnc->server_details.fmt.blue_shift = server_colour_shifts[2];
+    Uint8 *server_color_shifts = (Uint8 *) &server_color_maxima[3];
+    vnc->server_details.fmt.red_shift = server_color_shifts[0];
+    vnc->server_details.fmt.green_shift = server_color_shifts[1];
+    vnc->server_details.fmt.blue_shift = server_color_shifts[2];
 
-    char *padding = (char *) &server_colour_shifts[3];
+    char *padding = (char *) &server_color_shifts[3];
     padding += 3;
 
-    uint32_t *server_name_info = (uint32_t *) padding;
-    vnc->server_details.name_length = swap_endianness_u32b(server_name_info[0]);
+    Uint32 *server_name_info = (Uint32 *) padding;
+    vnc->server_details.name_length = SDL_SwapBE32(server_name_info[0]);
 
     if (vnc->server_details.name_length) {
 
         vnc->server_details.name = malloc(vnc->server_details.name_length + 1);
-        from_server(vnc->socket, vnc->server_details.name,
-                vnc->server_details.name_length, true);
+        VNC_FromServer(vnc->socket, vnc->server_details.name,
+                vnc->server_details.name_length);
         vnc->server_details.name[vnc->server_details.name_length] = '\0';
 
     } else {
         vnc->server_details.name = NULL;
     }
 
-    printf("server '%s':\n"
+    info(
+            "server '%s':\n"
             "  pixel depth: %u (%u bpp)\n"
-            "  true colour %s\n"
+            "  true color %s\n"
             "  %s pixel values\n"
             "  red:   %x << %2u\n"
             "  green: %x << %2u\n"
             "  blue:  %x << %2u\n",
-            vnc->server_details.name ?  vnc->server_details.name : "UNNAMED",
+            vnc->server_details.name ?
+                vnc->server_details.name : "UNNAMED",
             vnc->server_details.fmt.depth,
             vnc->server_details.fmt.bpp,
-            vnc->server_details.fmt.is_true_colour ? "enabled" : "disabled",
-            vnc->server_details.fmt.is_big_endian ? "big-endian" : "little-endian",
-            vnc->server_details.fmt.red_max, vnc->server_details.fmt.red_shift,
-            vnc->server_details.fmt.green_max, vnc->server_details.fmt.green_shift,
-            vnc->server_details.fmt.blue_max, vnc->server_details.fmt.blue_shift);
+            vnc->server_details.fmt.is_true_color
+                ? "enabled" : "disabled",
+            vnc->server_details.fmt.is_big_endian
+                ? "big-endian" : "little-endian",
+            vnc->server_details.fmt.red_max,
+            vnc->server_details.fmt.red_shift,
+            vnc->server_details.fmt.green_max,
+            vnc->server_details.fmt.green_shift,
+            vnc->server_details.fmt.blue_max,
+            vnc->server_details.fmt.blue_shift
+        );
 
     return 0;
 }
 
-SDL_Surface *create_surface(vnc_server_details *details) {
+SDL_Surface *VNC_CreateSurfaceForServer(VNC_ServerDetails *details) {
     return SDL_CreateRGBSurface(0, details->w, details->h, details->fmt.bpp,
             details->fmt.red_max << details->fmt.red_shift,
             details->fmt.green_max << details->fmt.green_shift,
@@ -376,30 +395,8 @@ SDL_Surface *create_surface(vnc_server_details *details) {
             0);
 }
 
-typedef enum {
-    FRAME_BUFFER_UPDATE = 0,
-    SET_COLOUR_MAP_ENTRIES = 1,
-    BELL = 2,
-    SERVER_CUT_TEXT = 3
-} server_msg_t;
-
-typedef enum {
-    RAW = 0,
-    COPY_RECT = 1,
-    RRE = 2,
-    HEXTILE = 5,
-    TRLE = 15,
-    ZRLE = 16,
-    PSEUDO_CURSOR = -239,
-    PSEUDO_DESKTOP_SIZE = -223
-} RFB_encoding_type;
-
-typedef struct {
-    SDL_Rect r;
-    RFB_encoding_type e;
-} SDL_vnc_rect_header;
-
-int set_encodings(SDL_vnc *vnc, RFB_encoding_type *encodings, uint n) {
+int VNC_SetEncodings(VNC_Connection *vnc,
+        VNC_RectangleEncodingMethod *encodings, uint n) {
 
     /*
      * Message size is:
@@ -410,155 +407,185 @@ int set_encodings(SDL_vnc *vnc, RFB_encoding_type *encodings, uint n) {
      */
     size_t msg_size = 4 + n * 4;
 
-    assure_buffer_size(vnc->buffer, msg_size);
+    VNC_AssureBufferSize(vnc->buffer, msg_size);
 
-    uint8_t *msg = (uint8_t *) vnc->buffer.data;
+    Uint8 *msg = (Uint8 *) vnc->buffer.data;
     *msg++ = 2; // ID of SetEncoding message
     msg++;
 
-    uint16_t *encoding_count = (uint16_t *) msg;
-    *encoding_count++ = swap_endianness_u16b(n);
+    Uint16 *encoding_count = (Uint16 *) msg;
+    *encoding_count++ = SDL_SwapBE16(n);
 
-    int32_t *encoding_ids = (int32_t *) encoding_count;
+    Sint32 *encoding_ids = (Sint32 *) encoding_count;
     for (uint i = 0; i < n; i++) {
-        *encoding_ids++ = swap_endianness_32b(encodings[i]);
+        *encoding_ids++ = SDL_SwapBE32(encodings[i]);
     }
 
-    return to_server(vnc->socket, vnc->buffer.data, msg_size);
+    return VNC_ToServer(vnc->socket, vnc->buffer.data, msg_size);
 }
 
-int raw_from_server(SDL_vnc *vnc, SDL_vnc_rect_header *header) {
-    size_t data_size =
-        header->r.w * header->r.h * vnc->server_details.fmt.bpp / 8;
-
-    server_to_scratch_buffer(vnc, header->r.w, header->r.h, true);
-
+int VNC_RawFromServer(VNC_Connection *vnc, VNC_RectangleHeader *header) {
+    VNC_ServerToScratchBuffer(vnc, header->r.w, header->r.h);
     return SDL_BlitSurface(vnc->scratch_buffer, NULL, vnc->surface, &header->r);
 }
 
-int copy_rect_from_server(SDL_vnc *vnc, SDL_vnc_rect_header *header) {
-    server_to_vnc_buffer(vnc, 4, true);
-    uint16_t *src_info = (uint16_t *) vnc->buffer.data;
+int VNC_CopyRectFromServer(VNC_Connection *vnc, VNC_RectangleHeader *header) {
+    VNC_ServerToBuffer(vnc, 4);
+    Uint16 *src_info = (Uint16 *) vnc->buffer.data;
 
     SDL_Rect src;
-    src.x = swap_endianness_u16b(*src_info++);
-    src.y = swap_endianness_u16b(*src_info++);
+    src.x = SDL_SwapBE16(*src_info++);
+    src.y = SDL_SwapBE16(*src_info++);
     src.w = header->r.w;
     src.h = header->r.h;
 
     return SDL_BlitSurface(vnc->surface, &src, vnc->surface, &header->r);
 }
 
-int rect_from_server(SDL_vnc *vnc, SDL_vnc_rect_header *header) {
-    server_to_vnc_buffer(vnc, 12, true);
+int VNC_DesktopSizeFromServer(VNC_Connection *vnc, VNC_RectangleHeader *header) {
+    vnc->server_details.w = header->r.w;
+    vnc->server_details.h = header->r.h;
 
-    uint16_t *rect_info = (uint16_t *) vnc->buffer.data;
-    header->r.x = swap_endianness_u16b(*rect_info++);
-    header->r.y = swap_endianness_u16b(*rect_info++);
-    header->r.w = swap_endianness_u16b(*rect_info++);
-    header->r.h = swap_endianness_u16b(*rect_info++);
+    if (vnc->surface) {
+        SDL_FreeSurface(vnc->surface);
+        vnc->surface = VNC_CreateSurfaceForServer(&vnc->server_details);
+    }
 
-    header->e = swap_endianness_32b(*((int32_t *) (rect_info)));
+    if (vnc->window) {
+        SDL_SetWindowSize(vnc->window, header->r.w, header->r.h);
+    }
+
+    return 0;
+}
+
+int VNC_HandleRectangle(VNC_Connection *vnc, VNC_RectangleHeader *header) {
+    VNC_ServerToBuffer(vnc, 12);
+
+    Uint16 *rect_info = (Uint16 *) vnc->buffer.data;
+    header->r.x = SDL_SwapBE16(*rect_info++);
+    header->r.y = SDL_SwapBE16(*rect_info++);
+    header->r.w = SDL_SwapBE16(*rect_info++);
+    header->r.h = SDL_SwapBE16(*rect_info++);
+
+    header->e = SDL_SwapBE32(*((Sint32 *) (rect_info)));
 
     switch (header->e) {
         case RAW:
-            return raw_from_server(vnc, header);
+            return VNC_RawFromServer(vnc, header);
 
         case COPY_RECT:
-            return copy_rect_from_server(vnc, header);
+            return VNC_CopyRectFromServer(vnc, header);
+
+        case PSEUDO_DESKTOP_SIZE:
+            return VNC_DesktopSizeFromServer(vnc, header);
 
         default:
             warn("unknown encoding method %i\n", header->e);
+            exit(0);
             return 0;
     }
 }
 
-int frame_buffer_update(SDL_vnc *vnc) {
+int VNC_FrameBufferUpdate(VNC_Connection *vnc) {
     char buf[3];
-    from_server(vnc->socket, buf, 3, true);
-    uint16_t rect_count = swap_endianness_u16b(*((uint16_t *) (buf + 1)));
+    VNC_FromServer(vnc->socket, buf, 3);
+    Uint16 rect_count = SDL_SwapBE16(*((Uint16 *) (buf + 1)));
 
     debug("receiving framebuffer update of %u rectangles\n", rect_count);
 
     for (uint i = 0; i < rect_count; i++) {
-        SDL_vnc_rect_header header;
-        rect_from_server(vnc, &header);
+        VNC_RectangleHeader header;
+        VNC_HandleRectangle(vnc, &header);
     }
+
+    return 0;
 }
 
-int framebuffer_update_request(int socket, bool incremental, uint16_t x,
-        uint16_t y, uint16_t w, uint16_t h) {
+int VNC_FramebufferUpdateRequest(int socket, SDL_bool incremental, Uint16 x,
+        Uint16 y, Uint16 w, Uint16 h) {
 
     debug("sending framebuffer update request\n");
 
     char msg[10];
 
-    uint8_t *msg_as_8b = (uint8_t *) msg;
+    Uint8 *msg_as_8b = (Uint8 *) msg;
     *msg_as_8b++ = 3;
     *msg_as_8b++ = incremental;
 
-    uint16_t *msg_as_16b = (uint16_t *) msg_as_8b;
+    Uint16 *msg_as_16b = (Uint16 *) msg_as_8b;
     *msg_as_16b++ = x;
     *msg_as_16b++ = y;
     *msg_as_16b++ = w;
     *msg_as_16b++ = h;
 
-    return to_server(socket, msg, 10);
+    return VNC_ToServer(socket, msg, 10);
 }
 
-int resize_colour_map(vnc_colour_map *colour_map, size_t n) {
-    colour_map->data = realloc(colour_map->data, n * sizeof (colour_map_entry));
+int VNC_ResizeColorMap(VNC_ColorMap *color_map, size_t n) {
+    color_map->data = realloc(color_map->data, n * sizeof (VNC_ColorMapEntry));
 
-    return !colour_map->data;
+    return !color_map->data;
 }
 
-int assure_colour_map_size(vnc_colour_map *colour_map, size_t n) {
-    if (colour_map->size < n) {
-        return resize_colour_map(colour_map, n);
+int VNC_AssureColourMapSize(VNC_ColorMap *color_map, size_t n) {
+    if (color_map->size < n) {
+        return VNC_ResizeColorMap(color_map, n);
     }
 
     return 0;
 }
 
-int set_colour_map_entries(SDL_vnc *vnc) {
-    server_to_vnc_buffer(vnc, 5, true);
+int VNC_SetColorMapEntries(VNC_Connection *vnc) {
+    VNC_ServerToBuffer(vnc, 5);
 
-    uint16_t *buf = (uint16_t *) (vnc->buffer.data + 1);
-    uint16_t first_colour_index = *buf++;
-    uint16_t number_of_colours = *buf++;
-    uint16_t colour_index_end = first_colour_index + number_of_colours;
+    char *blank = (char *) (vnc->buffer.data);
+    blank++;
 
-    debug("updating colours %u-%u in colour map\n", first_colour_index,
-            colour_index_end - 1);
+    Uint16 *buf = (Uint16 *) blank;
+    Uint16 first_color_index = *buf++;
+    Uint16 number_of_colors = *buf++;
+    Uint16 color_index_end = first_color_index + number_of_colors;
 
-    assure_colour_map_size(&vnc->colour_map, colour_index_end);
+    debug("updating colors %u-%u in color map\n", first_color_index,
+            color_index_end - 1);
 
-    for (uint i = first_colour_index; i < colour_index_end; i++) {
-        server_to_vnc_buffer(vnc, 6, true);
+    VNC_AssureColourMapSize(&vnc->color_map, color_index_end);
 
-        uint16_t *colours = (uint16_t *) vnc->buffer.data;
-        vnc->colour_map.data[i].r = *colours++;
-        vnc->colour_map.data[i].g = *colours++;
-        vnc->colour_map.data[i].b = *colours++;
+    for (uint i = first_color_index; i < color_index_end; i++) {
+        VNC_ServerToBuffer(vnc, 6);
+
+        Uint16 *colors = (Uint16 *) vnc->buffer.data;
+        vnc->color_map.data[i].r = *colors++;
+        vnc->color_map.data[i].g = *colors++;
+        vnc->color_map.data[i].b = *colors++;
     }
 
     return 0;
 }
 
-int update_loop(void *data) {
-    SDL_vnc *vnc = data;
+int VNC_UpdateLoop(void *data) {
+    VNC_Connection *vnc = data;
+
+    SDL_Event disconnect_event;
+    disconnect_event.type = VNC_SHUTDOWN;
+    disconnect_event.user.code = 0;
 
     while (vnc->thread) {
-        server_msg_t msg;
-        from_server(vnc->socket, &msg, 1, true);
+        VNC_ServerMessageType msg;
+        int res = VNC_FromServer(vnc->socket, &msg, 1);
+
+        if (res <= 0) {
+            disconnect_event.user.code = VNC_ERROR_SERVER_DISCONNECT;
+            break;
+        }
 
         switch (msg) {
             case FRAME_BUFFER_UPDATE:
-                frame_buffer_update(vnc);
+                VNC_FrameBufferUpdate(vnc);
                 break;
 
             case SET_COLOUR_MAP_ENTRIES:
-                set_colour_map_entries(vnc);
+                VNC_SetColorMapEntries(vnc);
                 break;
 
             //case BELL:
@@ -570,82 +597,102 @@ int update_loop(void *data) {
             //    break;
 
             default:
-                printf("unknown msg code %u\n", msg);
-                break;
+                disconnect_event.user.code = VNC_ERROR_UNIMPLEMENTED;
+                goto out_of_loop;
         }
 
-        framebuffer_update_request(vnc->socket, true, 0, 0,
+        VNC_FramebufferUpdateRequest(vnc->socket, SDL_TRUE, 0, 0,
                 vnc->server_details.w, vnc->server_details.h);
 
         SDL_Delay(1000 / vnc->fps);
     }
+
+out_of_loop:
+
+    SDL_PushEvent(&disconnect_event);
+
+    return 0;
 }
 
-SDL_Thread *create_update_thread(SDL_vnc *vnc) {
-    return SDL_CreateThread(update_loop, "RFB Listener", vnc);
+SDL_Thread *VNC_CreateUpdateThread(VNC_Connection *vnc) {
+    return SDL_CreateThread(VNC_UpdateLoop, "RFB Listener", vnc);
 }
 
-int handshake(SDL_vnc *vnc) {
-    RFB_version server_version = get_server_version(vnc);
-    RFB_version client_version =
+int VNC_Handshake(VNC_Connection *vnc) {
+    VNC_RFBProtocolVersion server_version = VNC_ReceiveServerVersion(vnc);
+    VNC_RFBProtocolVersion client_version =
         server_version == RFB_OTHER ? RFB_33 : server_version;
 
-    send_client_version(vnc, client_version);
+    VNC_SendClientVersion(vnc, client_version);
 
-    negotiate_security(vnc, client_version);
+    VNC_NegotiateSecurity(vnc, client_version);
 
-    client_initialisation(vnc);
-    server_initialisation(vnc);
+    VNC_ClientInitialisation(vnc);
+    VNC_ServerInitialisation(vnc);
+
+    return 0;
 }
 
-int send_initial_framebuffer_update_request(SDL_vnc *vnc) {
-    return framebuffer_update_request(vnc->socket, false, 0, 0,
+int VNC_SendInitialFramebufferUpdateRequest(VNC_Connection *vnc) {
+    return VNC_FramebufferUpdateRequest(vnc->socket, SDL_FALSE, 0, 0,
             vnc->server_details.w, vnc->server_details.h);
 }
 
-SDL_vnc_result init_vnc_connection(SDL_vnc *vnc, char *host, uint port,
-        uint fps) {
+int VNC_Init(void) {
+    SDL_InitSubSystem(SDL_INIT_VIDEO);
+    VNC_SHUTDOWN = SDL_RegisterEvents(1);
+    return 0;
+}
+
+VNC_Result VNC_InitConnection(VNC_Connection *vnc, char *host, Uint16 port,
+        unsigned fps) {
 
     int res;
 
     vnc->fps = fps;
     vnc->scratch_buffer = NULL;
 
-    res = init_vnc_buffer(&vnc->buffer);
+    res = VNC_InitBuffer(&vnc->buffer);
     if (res) {
-        return SDL_VNC_ERROR_OOM;
+        return VNC_ERROR_OOM;
     }
 
-    vnc->socket = create_socket();
+    vnc->socket = VNC_CreateSocket();
     if (vnc->socket <= 0) {
-        return SDL_VNC_ERROR_COULD_NOT_CREATE_SOCKET;
+        return VNC_ERROR_COULD_NOT_CREATE_SOCKET;
     }
 
-    res = vnc_connect(vnc, host, port);
+    res = VNC_Connect(vnc, host, port);
     if (res) {
-        return SDL_VNC_ERROR_COULD_NOT_CONNECT;
+        return VNC_ERROR_COULD_NOT_CONNECT;
     }
 
-    handshake(vnc);
+    VNC_Handshake(vnc);
 
-    RFB_encoding_type encodings[] = {
-        COPY_RECT, RAW
+    VNC_RectangleEncodingMethod encodings[] = {
+        COPY_RECT,
+        RAW,
+        PSEUDO_DESKTOP_SIZE,
+        PSEUDO_CONTINUOUS_UPDATES,
+        PSEUDO_CURSOR
     };
-    set_encodings(vnc, encodings, 2);
-    send_initial_framebuffer_update_request(vnc);
+    VNC_SetEncodings(vnc, encodings,
+            (sizeof (encodings) / sizeof (VNC_RectangleEncodingMethod)));
 
-    vnc->surface = create_surface(&vnc->server_details);
-    vnc->thread = create_update_thread(vnc);
+    VNC_SendInitialFramebufferUpdateRequest(vnc);
 
-    return OK;
+    vnc->surface = VNC_CreateSurfaceForServer(&vnc->server_details);
+    vnc->thread = VNC_CreateUpdateThread(vnc);
+
+    return 0;
 }
 
-int wait_on_vnc_connection(SDL_vnc *vnc) {
+int VNC_WaitOnConnection(VNC_Connection *vnc) {
     SDL_WaitThread(vnc->thread, NULL);
     return 0;
 }
 
-uint32_t translate_key(SDL_KeyCode key, bool shift) {
+Uint32 VNC_TranslateKey(SDL_KeyCode key, SDL_bool shift) {
     switch (key) {
         case SDLK_0: return XK_0;
         case SDLK_1: return XK_1;
@@ -911,10 +958,10 @@ uint32_t translate_key(SDL_KeyCode key, bool shift) {
     }
 }
 
-int pointer_event(SDL_vnc *vnc, uint32_t buttons, uint16_t x, uint16_t y,
-        int32_t mw_x, int32_t mw_y) {
+int VNC_SendPointerEvent(VNC_Connection *vnc, Uint32 buttons,
+        Uint16 x, Uint16 y, Sint32 mw_x, Sint32 mw_y) {
 
-    uint8_t button_mask = 0;
+    Uint8 button_mask = 0;
     button_mask |= (buttons & SDL_BUTTON_LMASK) ? (1 << 0) : 0; // LMB
     button_mask |= (buttons & SDL_BUTTON_MMASK) ? (1 << 1) : 0; // MMB
     button_mask |= (buttons & SDL_BUTTON_RMASK) ? (1 << 2) : 0; // RMB
@@ -924,40 +971,38 @@ int pointer_event(SDL_vnc *vnc, uint32_t buttons, uint16_t x, uint16_t y,
     button_mask |= (mw_x < 0) ? (1 << 5) : 0; // MW left
     button_mask |= (mw_x > 0) ? (1 << 6) : 0; // MW right
 
-    debug("buttons: %x\nbutton mask: %x\n", buttons, button_mask);
-
     char buf[6];
 
-    uint8_t *msg = (uint8_t *) buf;
+    Uint8 *msg = (Uint8 *) buf;
     *msg++ = 5;
     *msg++ = button_mask;
 
-    uint16_t *pos = (uint16_t *) msg;
-    *pos++ = swap_endianness_u16b(x);
-    *pos++ = swap_endianness_u16b(y);
+    Uint16 *pos = (Uint16 *) msg;
+    *pos++ = SDL_SwapBE16(x);
+    *pos++ = SDL_SwapBE16(y);
 
-    to_server(vnc->socket, buf, 6);
+    return VNC_ToServer(vnc->socket, buf, 6);
 }
 
-int key_event(SDL_vnc *vnc, bool pressed, SDL_Keysym sym) {
+int VNC_SendKeyEvent(VNC_Connection *vnc, SDL_bool pressed, SDL_Keysym sym) {
     char buf[8];
     SDL_Keycode key = sym.sym;
 
-    bool shift = sym.mod & KMOD_SHIFT;
+    SDL_bool shift = sym.mod & KMOD_SHIFT;
 
-    uint8_t *msg = (uint8_t *) buf;
+    Uint8 *msg = (Uint8 *) buf;
     *msg++ = 4;
     *msg++ = pressed;
     msg += 2;
 
-    uint32_t *key_p = (uint32_t *) msg;
-    *key_p = swap_endianness_u32b(translate_key(key, shift));
+    Uint32 *key_p = (Uint32 *) msg;
+    *key_p = SDL_SwapBE32(VNC_TranslateKey(key, shift));
 
-    to_server(vnc->socket, buf, 8);
+    return VNC_ToServer(vnc->socket, buf, 8);
 }
 
-SDL_Window *create_window_for_connection(SDL_vnc *vnc, char *title, int x,
-        int y, Uint32 flags) {
+SDL_Window *VNC_CreateWindowForConnection(VNC_Connection *vnc, char *title,
+        int x, int y, Uint32 flags) {
 
     vnc->window = SDL_CreateWindow(title, x, y, vnc->server_details.w,
             vnc->server_details.h, flags);
@@ -966,3 +1011,5 @@ SDL_Window *create_window_for_connection(SDL_vnc *vnc, char *title, int x,
 
     return vnc->window;
 }
+
+/* vim: se ft=c tw=80 ts=4 sw=4 et : */

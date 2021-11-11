@@ -1,85 +1,91 @@
 #ifndef _SDL2_VNC_H
 #define _SDL2_VNC_H
 
-#include <stddef.h>
-#include <stdbool.h>
-#include <stdint.h>
-
 #include <SDL2/SDL.h>
 
 typedef struct {
     size_t size;
     void *data;
-} vnc_buf;
+} VNC_ConnectionBuffer;
 
 typedef struct {
-    uint8_t bpp;
-    uint8_t depth;
-    uint8_t is_big_endian;
-    uint8_t is_true_colour;
+    Uint8 bpp;
+    Uint8 depth;
+    Uint8 is_big_endian;
+    Uint8 is_true_color;
 
-    uint16_t red_max;
-    uint16_t green_max;
-    uint16_t blue_max;
+    Uint16 red_max;
+    Uint16 green_max;
+    Uint16 blue_max;
 
-    uint8_t red_shift;
-    uint8_t green_shift;
-    uint8_t blue_shift;
-} vnc_pixel_format;
+    Uint8 red_shift;
+    Uint8 green_shift;
+    Uint8 blue_shift;
+} VNC_PixelFormat;
 
 typedef struct {
-    uint16_t w;
-    uint16_t h;
-    vnc_pixel_format fmt;
-    uint32_t name_length;
+    Uint16 w;
+    Uint16 h;
+    VNC_PixelFormat fmt;
+    Uint32 name_length;
     char *name;
-} vnc_server_details;
+} VNC_ServerDetails;
 
 typedef struct {
-    uint16_t r;
-    uint16_t g;
-    uint16_t b;
-} colour_map_entry;
+    Uint16 r;
+    Uint16 g;
+    Uint16 b;
+} VNC_ColorMapEntry;
+#define VNC_ColourMapEntry VNC_ColorMapEntry
 
 typedef struct {
-    colour_map_entry *data;
+    VNC_ColorMapEntry *data;
     size_t size;
-} vnc_colour_map;
+} VNC_ColorMap;
+#define VNC_ColourMap VNC_ColorMap
 
 typedef struct {
     int socket;
-    vnc_buf buffer;
+    VNC_ConnectionBuffer buffer;
     SDL_Surface *scratch_buffer;
-    vnc_server_details server_details;
+    VNC_ServerDetails server_details;
     SDL_Surface *surface;
     SDL_Thread *thread;
-    unsigned int fps;
-    vnc_colour_map colour_map;
+    unsigned fps;
+    VNC_ColorMap color_map;
     SDL_Window *window;
-} SDL_vnc;
+} VNC_Connection;
 
 typedef enum {
-    SDL_VNC_ERROR_OOM,
-    SDL_VNC_ERROR_COULD_NOT_CREATE_SOCKET,
-    SDL_VNC_ERROR_COULD_NOT_CONNECT,
-    SDL_VNC_ERROR_SERVER_DISCONNECT,
-    SDL_VNC_ERROR_UNSUPPORTED_SECURITY_PROTOCOLS,
-    SDL_VNC_ERROR_SECURITY_HANDSHAKE_FAILED,
-    SDL_VNC_ERROR_UNIMPLEMENTED,
+    VNC_OK = 0,
 
-    OK = 0
-} SDL_vnc_result;
+    VNC_ERROR_OOM,
+    VNC_ERROR_COULD_NOT_CREATE_SOCKET,
+    VNC_ERROR_COULD_NOT_CONNECT,
+    VNC_ERROR_SERVER_DISCONNECT,
+    VNC_ERROR_UNSUPPORTED_SECURITY_PROTOCOLS,
+    VNC_ERROR_SECURITY_HANDSHAKE_FAILED,
+    VNC_ERROR_UNIMPLEMENTED
+} VNC_Result;
 
-SDL_vnc_result init_vnc_connection(SDL_vnc *vnc, char *host, unsigned int port,
-        unsigned int fps);
+extern int VNC_SHUTDOWN;
 
-int wait_on_vnc_connection(SDL_vnc *vnc);
+int VNC_Init();
 
-SDL_Window *create_window_for_connection(SDL_vnc *vnc, char *title, int x,
-        int y, Uint32 flags);
+char *VNC_ErrorString(VNC_Result err);
 
-int key_event(SDL_vnc *vnc, bool pressed, SDL_Keysym key);
-int pointer_event(SDL_vnc *vnc, uint32_t button_mask, uint16_t x, uint16_t y,
-        int32_t mw_x, int32_t mw_y);
+VNC_Result VNC_InitConnection(VNC_Connection *vnc, char *host, Uint16 port,
+        unsigned fps);
+
+int VNC_WaitOnConnection(VNC_Connection *vnc);
+
+SDL_Window *VNC_CreateWindowForConnection(VNC_Connection *vnc, char *title,
+        int x, int y, Uint32 flags);
+
+int VNC_SendKeyEvent(VNC_Connection *vnc, SDL_bool pressed, SDL_Keysym key);
+int VNC_SendPointerEvent(VNC_Connection *vnc, Uint32 button_mask,
+        Uint16 x, Uint16 y, Sint32 mw_x, Sint32 mw_y);
 
 #endif /* _SDL2_VNC_H */
+
+/* vim: se ft=c tw=80 ts=4 sw=4 et : */

@@ -1,8 +1,6 @@
-let nixpkgs = import <nixpkgs> {}; in
-
-{ stdenv ? nixpkgs.clangStdenv
-, SDL2 ? nixpkgs.SDL2
-, patchelf ? nixpkgs.patchelf
+{ stdenv
+, SDL2
+, patchelf
 }:
 
 stdenv.mkDerivation {

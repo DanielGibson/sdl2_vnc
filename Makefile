@@ -1,5 +1,7 @@
-CFLAGS += $(shell sdl2-config --cflags) -L.
-LDLIBS += $(shell sdl2-config --libs) -lSDL2_vnc
+CFLAGS += -Wpedantic -Wall
+
+CFLAGS += $(shell sdl2-config --cflags)
+LDLIBS += $(shell sdl2-config --libs)
 
 PREFIX ?= /usr/local
 
@@ -7,8 +9,7 @@ default: all
 
 all: vncc libSDL2_vnc.so libSDL2_vnc.a
 
-vncc: vncc.o libSDL2_vnc.so
-	$(CC) $(CFLAGS) $(LDFLAGS) $(OUTPUT_OPTION) $< $(LDLIBS)
+vncc: libSDL2_vnc.so
 
 libSDL2_vnc.so: SDL2_vnc.o
 	$(CC) $(CFLAGS) -shared $(OUTPUT_OPTION) $^

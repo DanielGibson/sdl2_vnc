@@ -1,34 +1,84 @@
-#include <stdio.h>
+#include <SDL2/SDL.h>
 
 #include "SDL2_vnc.h"
 
+#define exit_error(ret, msg, ...) do { \
+    fprintf(stderr, msg "\n", ## __VA_ARGS__); \
+    exit(ret); \
+} while (0)
+
+void usage(char *name) {
+    printf("usage:\n%s host:port\n", name);
+    exit(1);
+}
+
+void exit_on_sdl_error(int res) {
+    if (!res) {
+        return;
+    }
+
+    exit_error(1, "SDL error: %s", SDL_GetError());
+}
+
+void exit_on_vnc_error(VNC_Result res) {
+    if (!res) {
+        return;
+    }
+
+    exit_error(res, "VNC error: %s", VNC_ErrorString(res));
+}
+
+int parse_address(char *address) {
+
+    /*
+     * expects address of format host:port
+     */
+    char *split = strchr(address, ':');
+    *split = '\0';
+
+    char *port_start = split + 1;
+    int port = strtol(port_start, NULL, 10);
+
+    return port;
+}
+
 int main(int argc, char **argv) {
 
+    if (argc < 2) {
+        usage(argv[0]);
+    }
+
+    char *host = argv[1];
+    int port = parse_address(host);
+
     SDL_Init(SDL_INIT_VIDEO);
+    VNC_Init();
 
-    SDL_vnc vnc;
-    printf("trying to make connection\n");
-    init_vnc_connection(&vnc, "127.0.0.1", 5905, 60);
-    printf("connection succeeded!\n");
+    VNC_Connection vnc;
+    int connection_result = VNC_InitConnection(&vnc, host, port, 60);
+    exit_on_vnc_error(connection_result);
 
-    SDL_Window *wind = create_window_for_connection(&vnc, NULL,
+    SDL_Window *wind = VNC_CreateWindowForConnection(&vnc, NULL,
             SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 0);
+    exit_on_sdl_error(!wind);
 
     SDL_Renderer *rend = SDL_CreateRenderer(wind, -1, 0);
+    exit_on_sdl_error(!rend);
 
-    bool running = true;
+    SDL_bool running = SDL_TRUE;
 
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             switch (e.type) {
                 case SDL_QUIT:
-                    running = false;
+                    running = SDL_FALSE;
                     break;
 
                 case SDL_KEYUP:
                 case SDL_KEYDOWN:
-                    key_event(&vnc, e.key.state == SDL_PRESSED, e.key.keysym);
+                    VNC_SendKeyEvent(&vnc, e.key.state == SDL_PRESSED,
+                            e.key.keysym);
                     break;
 
                 case SDL_MOUSEBUTTONUP:
@@ -37,7 +87,7 @@ int main(int argc, char **argv) {
                     int x;
                     int y;
                     uint32_t buttons = SDL_GetMouseState(&x, &y);
-                    pointer_event(&vnc, buttons, x, y, 0, 0);
+                    VNC_SendPointerEvent(&vnc, buttons, x, y, 0, 0);
                     break;
                 }
 
@@ -45,14 +95,21 @@ int main(int argc, char **argv) {
                     int x;
                     int y;
                     uint32_t buttons = SDL_GetMouseState(&x, &y);
-                    pointer_event(&vnc, buttons, x, y, e.wheel.x, e.wheel.y);
-                    pointer_event(&vnc, buttons, x, y, 0, 0);
+
+                    VNC_SendPointerEvent(&vnc, buttons, x, y,
+                            e.wheel.x, e.wheel.y);
+                    VNC_SendPointerEvent(&vnc, buttons, x, y, 0, 0);
                     break;
                 }
 
                 default:
+                    if (e.type == VNC_SHUTDOWN) {
+                        exit_on_vnc_error(e.user.code);
+                        running = SDL_FALSE;
+                    }
                     break;
             }
+
         }
 
         SDL_Texture *text = SDL_CreateTextureFromSurface(rend, vnc.surface);
@@ -61,8 +118,10 @@ int main(int argc, char **argv) {
 
         SDL_RenderPresent(rend);
 
-        SDL_Delay(1000/60);
+        SDL_Delay(1000/vnc.fps);
     }
 
     return 0;
 }
+
+/* vim: se ft=c tw=80 ts=4 sw=4 et : */
