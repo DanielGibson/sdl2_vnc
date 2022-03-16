@@ -1,4 +1,4 @@
-CFLAGS += -Wpedantic -Wall
+CFLAGS += -Wpedantic -Wall -fPIC
 
 CFLAGS += $(shell sdl2-config --cflags)
 LDLIBS += $(shell sdl2-config --libs)

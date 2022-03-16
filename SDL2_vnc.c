@@ -673,8 +673,8 @@ VNC_Result VNC_InitConnection(VNC_Connection *vnc, char *host, Uint16 port,
         COPY_RECT,
         RAW,
         PSEUDO_DESKTOP_SIZE,
-        PSEUDO_CONTINUOUS_UPDATES,
-        PSEUDO_CURSOR
+        PSEUDO_CONTINUOUS_UPDATES
+        // PSEUDO_CURSOR
     };
     VNC_SetEncodings(vnc, encodings,
             (sizeof (encodings) / sizeof (VNC_RectangleEncodingMethod)));
@@ -687,9 +687,8 @@ VNC_Result VNC_InitConnection(VNC_Connection *vnc, char *host, Uint16 port,
     return 0;
 }
 
-int VNC_WaitOnConnection(VNC_Connection *vnc) {
+void VNC_WaitOnConnection(VNC_Connection *vnc) {
     SDL_WaitThread(vnc->thread, NULL);
-    return 0;
 }
 
 Uint32 VNC_TranslateKey(SDL_KeyCode key, SDL_bool shift) {
