@@ -8,7 +8,7 @@
 } while (0)
 
 void usage(char *name) {
-    printf("usage:\n%s host:port\n", name);
+    printf("usage:\n%s host[:port]\n", name);
     exit(1);
 }
 
@@ -31,14 +31,15 @@ void exit_on_vnc_error(VNC_Result res) {
 int parse_address(char *address) {
 
     /*
-     * expects address of format host:port
+     * expects address of format host:port or just host (port defaults to 5900 then)
      */
+    int port = 5900;
     char *split = strchr(address, ':');
-    *split = '\0';
-
-    char *port_start = split + 1;
-    int port = strtol(port_start, NULL, 10);
-
+    if(split) {
+        *split = '\0';
+        char *port_start = split + 1;
+        port = strtol(port_start, NULL, 10);
+    }
     return port;
 }
 
@@ -58,7 +59,7 @@ int main(int argc, char **argv) {
     int connection_result = VNC_InitConnection(&vnc, host, port, 60);
     exit_on_vnc_error(connection_result);
 
-    SDL_Window *wind = VNC_CreateWindowForConnection(&vnc, NULL,
+    SDL_Window *wind = VNC_CreateWindowForConnection(&vnc, "vncc",
             SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 0);
     exit_on_sdl_error(!wind);
 
