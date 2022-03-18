@@ -563,6 +563,28 @@ int VNC_SetColorMapEntries(VNC_Connection *vnc) {
     return 0;
 }
 
+int VNC_CutText(VNC_Connection *vnc) {
+    // https://datatracker.ietf.org/doc/html/rfc6143#section-7.6.4
+    // 1 byte message-type (0x3, already read); 3 bytes padding
+    // 4 bytes U32 length; $length U8 chars (in Latin-1) with text
+    char buf[1024];
+    VNC_FromServer(vnc->socket, buf, 7); // read padding and length
+    Uint32 length;
+    memcpy(&length, buf+3, 4); // skip padding and get length
+    length = SDL_SwapBE32(length);
+
+    char* readBuf = (length < sizeof(buf)) ? buf : malloc(length+1);
+    VNC_FromServer(vnc->socket, readBuf, length);
+    readBuf[length] = '\0'; // make sure the string is \0 terminated (unsure if VNC guarantees that)
+
+    //printf("TODO: cut_text - received '%s'\n", readBuf); // TODO: what to do with it?
+
+    if(readBuf != buf) {
+        free(readBuf);
+    }
+    return 0;
+}
+
 int VNC_UpdateLoop(void *data) {
     VNC_Connection *vnc = data;
 
@@ -571,13 +593,14 @@ int VNC_UpdateLoop(void *data) {
     disconnect_event.user.code = 0;
 
     while (vnc->thread) {
-        VNC_ServerMessageType msg;
-        int res = VNC_FromServer(vnc->socket, &msg, 1);
+        char buf[1];
+        int res = VNC_FromServer(vnc->socket, buf, 1);
 
         if (res <= 0) {
             disconnect_event.user.code = VNC_ERROR_SERVER_DISCONNECT;
             break;
         }
+        VNC_ServerMessageType msg = buf[0];
 
         switch (msg) {
             case FRAME_BUFFER_UPDATE:
@@ -588,13 +611,14 @@ int VNC_UpdateLoop(void *data) {
                 VNC_SetColorMapEntries(vnc);
                 break;
 
-            //case BELL:
-            //    //server_bell(vnc);
-            //    break;
+            case BELL:
+                // this is the whole message - nothing more to do, except maybe playing a bell sound
+                // TODO: printf("TODO: bell\n");
+                break;
 
-            //case SERVER_CUT_TEXT:
-            //    //server_cut_text(vnc);
-            //    break;
+            case SERVER_CUT_TEXT:
+                VNC_CutText(vnc);
+                break;
 
             default:
                 disconnect_event.user.code = VNC_ERROR_UNIMPLEMENTED;
