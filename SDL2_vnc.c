@@ -6,6 +6,7 @@
 #include <SDL2/SDL.h>
 
 #include "keysymdef.h"
+#include "XF86keysym.h"
 
 #include "SDL2_vnc.h"
 
@@ -772,6 +773,8 @@ Uint32 VNC_TranslateKey(SDL_Keycode key, SDL_bool shift) {
             return key;
         }
     }
+    // TODO: character keys from other charsets - to do this properly we'd probably
+    //       have to use text input events
 
     switch (key) {
         case SDLK_UNKNOWN: return XK_VoidSymbol;
@@ -831,7 +834,7 @@ Uint32 VNC_TranslateKey(SDL_Keycode key, SDL_bool shift) {
         case SDLK_KP_PERIOD: return XK_period;
 
         case SDLK_APPLICATION: return XK_Menu; // compose or windows context menu
-        // TODO: SDLK_POWER? (more of a status flag, says SDL)
+        case SDLK_POWER: return XF86XK_PowerOff;
         case SDLK_KP_EQUALS: return XK_KP_Equal;
         case SDLK_F13: return XK_F13;
         case SDLK_F14: return XK_F14;
@@ -852,14 +855,16 @@ Uint32 VNC_TranslateKey(SDL_Keycode key, SDL_bool shift) {
         case SDLK_STOP: return XK_Cancel;
         case SDLK_AGAIN: return XK_Redo;
         case SDLK_UNDO: return XK_Undo;
-        //TODO: SDLK_CUT - maybe use XF86XK_Cut etc? does vnc support those?
-        case SDLK_COPY: return XK_3270_Copy; // TODO: really?
-        // TODO: SDLK_PASTE
+        case SDLK_CUT: return XF86XK_Cut;
+        case SDLK_COPY: return XF86XK_Copy;
+        case SDLK_PASTE: return XF86XK_Paste;
         case SDLK_FIND: return XK_Find;
-        // TODO: SDLK_MUTE, SDLK_VOLUMEUP, SDLK_VOLUMEDOWN - also XF86K_*
-        // TODO: SDLK_KP_EQUALSAS400 wtf is a AS/400 keyboard
+        case SDLK_MUTE: return XF86XK_AudioMute;
+        case SDLK_VOLUMEUP: return XF86XK_AudioRaiseVolume;
+        case SDLK_VOLUMEDOWN: return XF86XK_AudioLowerVolume;
+        // TODO: SDLK_KP_EQUALSAS400 - wtf is a AS/400 keyboard
 
-        case SDLK_ALTERASE: return XK_3270_EraseInput; // TODO: really?
+        case SDLK_ALTERASE: return XK_3270_EraseInput;
         case SDLK_SYSREQ: return XK_Sys_Req;
         case SDLK_CANCEL: return XK_Cancel;
         case SDLK_CLEAR: return XK_Clear;
@@ -923,39 +928,38 @@ Uint32 VNC_TranslateKey(SDL_Keycode key, SDL_bool shift) {
 
         case SDLK_MODE: return XK_ISO_Level3_Shift; // apparently this is supposed to be the AltGr key
 
-/*      TODO: look at XF86keysym.h
-        case SDLK_AUDIONEXT: return ;
-        case SDLK_AUDIOPREV: return ;
-        case SDLK_AUDIOSTOP: return ;
-        case SDLK_AUDIOPLAY: return ;
-        case SDLK_AUDIOMUTE: return ;
-        case SDLK_MEDIASELECT return ;
-        case SDLK_WWW: return ;
-        case SDLK_MAIL: return ;
-        case SDLK_CALCULATOR: return ;
-        case SDLK_COMPUTER: return ;
-        case SDLK_AC_SEARCH: return ;
-        case SDLK_AC_HOME: return ;
-        case SDLK_AC_BACK: return ;
-        case SDLK_AC_FORWARD: return ;
-        case SDLK_AC_STOP: return ;
-        case SDLK_AC_REFRESH: return ;
-        case SDLK_AC_BOOKMARKS: return ;
+        // multimedia keys from XF86keysym.h
+        case SDLK_AUDIONEXT: return XF86XK_AudioNext;
+        case SDLK_AUDIOPREV: return XF86XK_AudioPrev;
+        case SDLK_AUDIOSTOP: return XF86XK_AudioStop;
+        case SDLK_AUDIOPLAY: return XF86XK_AudioPlay;
+        case SDLK_AUDIOMUTE: return XF86XK_AudioMute;
+        case SDLK_MEDIASELECT: return XF86XK_AudioMedia; // TODO: really?
+        case SDLK_WWW: return XF86XK_WWW;
+        case SDLK_MAIL: return XF86XK_Mail;
+        case SDLK_CALCULATOR: return XF86XK_Calculater;
+        case SDLK_COMPUTER: return XF86XK_MyComputer;
+        case SDLK_AC_SEARCH: return XF86XK_Search;
+        case SDLK_AC_HOME: return XF86XK_HomePage; // TODO: really?
+        case SDLK_AC_BACK: return XF86XK_Back;
+        case SDLK_AC_FORWARD: return XF86XK_Forward;
+        case SDLK_AC_STOP: return XF86XK_Stop;
+        case SDLK_AC_REFRESH: return XF86XK_Refresh;
+        case SDLK_AC_BOOKMARKS: return XF86XK_Favorites; //  TODO: or XF86XK_MySites ?
 
-        case SDLK_BRIGHTNESSDOWN: return ;
-        case SDLK_BRIGHTNESSUP: return ;
-        case SDLK_DISPLAYSWITCH: return ;
-        case SDLK_KBDILLUMTOGGLE: return ;
-        case SDLK_KBDILLUMDOWN: return ;
-        case SDLK_KBDILLUMUP: return ;
-        case SDLK_EJECT: return ;
-        case SDLK_SLEEP: return ;
-        case SDLK_APP1: return ;
-        case SDLK_APP2: return ;
+        case SDLK_BRIGHTNESSDOWN: return XF86XK_MonBrightnessDown;
+        case SDLK_BRIGHTNESSUP: return XF86XK_MonBrightnessUp;
+        case SDLK_DISPLAYSWITCH: return XF86XK_Display;
+        case SDLK_KBDILLUMTOGGLE: return XF86XK_KbdLightOnOff;
+        case SDLK_KBDILLUMDOWN: return XF86XK_KbdBrightnessDown;
+        case SDLK_KBDILLUMUP: return XF86XK_KbdBrightnessUp;
+        case SDLK_EJECT: return XF86XK_Eject;
+        case SDLK_SLEEP: return XF86XK_Sleep;
+        // TODO: SDLK_APP1, SDLK_APP2
 
-        case SDLK_AUDIOREWIND: return ;
-        case SDLK_AUDIOFASTFORWARD: return ;
-*/
+        case SDLK_AUDIOREWIND: return XF86XK_AudioRewind;
+        case SDLK_AUDIOFASTFORWARD: return XF86XK_AudioForward;
+
         default:
             return XK_VoidSymbol;
     }
@@ -1057,7 +1061,8 @@ static const Uint16 map_sdl2_scancode_to_qnum[] = {
   0x57, /* usb:68 -> linux:87 (KEY_F11) -> qnum:87 */
   0x58, /* usb:69 -> linux:88 (KEY_F12) -> qnum:88 */
 
-  0x54, /* usb:70 -> SDL_SCANCODE_PRINTSCREEN -> qnum:84 - same as SYSREQ! */
+  //0x54, /* usb:70 -> SDL_SCANCODE_PRINTSCREEN -> qnum:84 - same as SYSREQ! */
+  0,  // SDL_SCANCODE_PRINTSCREEN - better translated by VNC_TranslateKey() to XK_Print
   0x46, /* usb:71 -> linux:70 (KEY_SCROLLLOCK) -> qnum:70 */
   0xc6, /* usb:72 -> linux:119 (KEY_PAUSE) -> qnum:198 */
   0xd2, /* usb:73 -> linux:110 (KEY_INSERT) -> qnum:210 */
@@ -1155,7 +1160,8 @@ static const Uint16 map_sdl2_scancode_to_qnum[] = {
 
   // SDL_SCANCODE_ALTERASE etc:
   0x94, // usb:153 -> SDL_SCANCODE_ALTERASE - KEY_ALTERASE
-  0x54, // usb:154 -> SDL_SCANCODE_SYSREQ -> same as print screen!
+  //0x54, // usb:154 -> SDL_SCANCODE_SYSREQ -> same as print screen!
+  0,   // SDL_SCANCODE_SYSREQ - better translated by VNC_TranslateKey() to XK_Sys_Req
   0xCA, // usb:155 -> SDL_SCANCODE_CANCEL - KEY_CANCEL
   0, // usb:156 -> SDL_SCANCODE_CLEAR
   0, // usb:157 -> SDL_SCANCODE_PRIOR
@@ -1304,7 +1310,7 @@ Uint32 VNC_ToQemuKeynum(SDL_Keysym sym) {
      */
     Uint32 sc = sym.scancode;
     if(sc < sizeof(map_sdl2_scancode_to_qnum)/sizeof(map_sdl2_scancode_to_qnum[0]))
-        return map_sdl2_scancode_to_qnum[sym.scancode];
+        return map_sdl2_scancode_to_qnum[sc];
 
     return 0; // invalid or unsupported scancode
 }
