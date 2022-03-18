@@ -691,7 +691,7 @@ void VNC_WaitOnConnection(VNC_Connection *vnc) {
     SDL_WaitThread(vnc->thread, NULL);
 }
 
-Uint32 VNC_TranslateKey(SDL_KeyCode key, SDL_bool shift) {
+Uint32 VNC_TranslateKey(SDL_Keycode key, SDL_bool shift) {
     switch (key) {
         case SDLK_0: return XK_0;
         case SDLK_1: return XK_1;
