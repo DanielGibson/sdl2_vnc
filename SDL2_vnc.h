@@ -199,6 +199,11 @@ typedef struct {
     unsigned fps;
 
     /**
+     * Server allows using QEMU Extended Key Events
+     */
+    SDL_bool qemu_keyevents_supported;
+
+    /**
      * Color map of the connection.
      *
      * `NULL` if no color map has been specified.

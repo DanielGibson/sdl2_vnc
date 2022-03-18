@@ -35,11 +35,18 @@ typedef enum {
     TRLE = 15,
     ZRLE = 16,
 
-    // https://vncdotool.readthedocs.io/en/0.8.0/rfbproto.html#encodings
-    // says this should be -313
-    PSEUDO_CONTINUOUS_UPDATES = -313,
     PSEUDO_CURSOR = -239,
-    PSEUDO_DESKTOP_SIZE = -223
+    PSEUDO_DESKTOP_SIZE = -223,
+
+    // https://vncdotool.readthedocs.io/en/0.8.0/rfbproto.html#encodings
+    // says this should be -313 (this seems to be a TightVNC extension originally)
+    PSEUDO_CONTINUOUS_UPDATES = -313,
+
+    // QEMU extensions (at least extended keyevent is also implemented
+    // by some other servers like wayvnc/neatvnc)
+    // PSEUDO_QEMU_POINTER_MOTION_CHANGE = -257, // TODO
+    PSEUDO_QEMU_EXTENDED_KEYEVENT = -258,
+    // PSEUDO_QEMU_AUDIO = -259 // TODO ?
 } VNC_RectangleEncodingMethod;
 
 typedef struct {
@@ -481,11 +488,15 @@ int VNC_HandleRectangle(VNC_Connection *vnc, VNC_RectangleHeader *header) {
         case PSEUDO_DESKTOP_SIZE:
             return VNC_DesktopSizeFromServer(vnc, header);
 
+        case PSEUDO_QEMU_EXTENDED_KEYEVENT:
+            vnc->qemu_keyevents_supported = SDL_TRUE;
+            break;
+
         default:
             warn("unknown encoding method %i\n", header->e);
             exit(0);
-            return 0;
     }
+    return 0;
 }
 
 int VNC_FrameBufferUpdate(VNC_Connection *vnc) {
@@ -614,7 +625,8 @@ int VNC_UpdateLoop(void *data) {
                 break;
 
             case BELL:
-                // this is the whole message - nothing more to do, except maybe playing a bell sound
+                // this is the whole message - nothing more to do,
+                // except maybe playing a bell sound
                 // TODO: printf("TODO: bell\n");
                 break;
 
@@ -675,8 +687,10 @@ VNC_Result VNC_InitConnection(VNC_Connection *vnc, char *host, Uint16 port,
 
     int res;
 
+    // probably a good idea to clear the whole struct
+    memset(vnc, 0, sizeof(*vnc));
+
     vnc->fps = fps;
-    vnc->scratch_buffer = NULL;
 
     res = VNC_InitBuffer(&vnc->buffer);
     if (res) {
@@ -699,7 +713,8 @@ VNC_Result VNC_InitConnection(VNC_Connection *vnc, char *host, Uint16 port,
         COPY_RECT,
         RAW,
         PSEUDO_DESKTOP_SIZE,
-        PSEUDO_CONTINUOUS_UPDATES
+        PSEUDO_CONTINUOUS_UPDATES,
+        PSEUDO_QEMU_EXTENDED_KEYEVENT,
         // PSEUDO_CURSOR
     };
     VNC_SetEncodings(vnc, encodings,
@@ -716,6 +731,33 @@ VNC_Result VNC_InitConnection(VNC_Connection *vnc, char *host, Uint16 port,
 void VNC_WaitOnConnection(VNC_Connection *vnc) {
     SDL_WaitThread(vnc->thread, NULL);
 }
+
+int VNC_SendPointerEvent(VNC_Connection *vnc, Uint32 buttons,
+        Uint16 x, Uint16 y, Sint32 mw_x, Sint32 mw_y) {
+
+    Uint8 button_mask = 0;
+    button_mask |= (buttons & SDL_BUTTON_LMASK) ? (1 << 0) : 0; // LMB
+    button_mask |= (buttons & SDL_BUTTON_MMASK) ? (1 << 1) : 0; // MMB
+    button_mask |= (buttons & SDL_BUTTON_RMASK) ? (1 << 2) : 0; // RMB
+
+    button_mask |= (mw_y > 0) ? (1 << 3) : 0; // MW up
+    button_mask |= (mw_y < 0) ? (1 << 4) : 0; // MW down
+    button_mask |= (mw_x < 0) ? (1 << 5) : 0; // MW left
+    button_mask |= (mw_x > 0) ? (1 << 6) : 0; // MW right
+
+    char buf[6];
+
+    Uint8 *msg = (Uint8 *) buf;
+    *msg++ = 5;
+    *msg++ = button_mask;
+
+    Uint16 *pos = (Uint16 *) msg;
+    *pos++ = SDL_SwapBE16(x);
+    *pos++ = SDL_SwapBE16(y);
+
+    return VNC_ToServer(vnc->socket, buf, 6);
+}
+
 
 Uint32 VNC_TranslateKey(SDL_Keycode key, SDL_bool shift) {
     switch (key) {
@@ -983,47 +1025,403 @@ Uint32 VNC_TranslateKey(SDL_Keycode key, SDL_bool shift) {
     }
 }
 
-int VNC_SendPointerEvent(VNC_Connection *vnc, Uint32 buttons,
-        Uint16 x, Uint16 y, Sint32 mw_x, Sint32 mw_y) {
 
-    Uint8 button_mask = 0;
-    button_mask |= (buttons & SDL_BUTTON_LMASK) ? (1 << 0) : 0; // LMB
-    button_mask |= (buttons & SDL_BUTTON_MMASK) ? (1 << 1) : 0; // MMB
-    button_mask |= (buttons & SDL_BUTTON_RMASK) ? (1 << 2) : 0; // RMB
+/* Table to map SDL_Scancode to QEMU codes.
+ * SDL2 scancodes are based on USB HID usage codes,
+ * so I generated this with https://github.com/qemu/keycodemapdb
+ * ./keymap-gen code-map ../data/keymaps.csv usb qnum --lang stdc++
+ * and adjusted the code to be C-compatible (stdc++ because --lang stdc uses
+ * C99-specific notation for the array and I think it'd be useful if this table
+ * could compile as C++ as well)
+ * Then I manually adjusted it for SDL scancodes, which deviate from the
+ * "USB HID Keyboard/Keypad Page (0x07)" standard to also support "multimedia keys"
+ * from the USB Consumer Page (0x0C).
+ * Because many of those codes are identical to DirectInput DIK_* constants,
+ * I was able to reuse some of this:
+ * https://github.com/DanielGibson/Snippets/blob/master/sdl2_scancode_to_dinput.h
+ */
+static const Uint16 map_sdl2_scancode_to_qnum[] = {
+  0, /* usb:0 -> SDL_SCANCODE_UNKNOWN -> qnum:None */
+  // unused:
+  0, /* usb:1 -> linux:None (unnamed) -> qnum:None */
+  0, /* usb:2 -> linux:None (unnamed) -> qnum:None */
+  0, /* usb:3 -> linux:None (unnamed) -> qnum:None */
 
-    button_mask |= (mw_y > 0) ? (1 << 3) : 0; // MW up
-    button_mask |= (mw_y < 0) ? (1 << 4) : 0; // MW down
-    button_mask |= (mw_x < 0) ? (1 << 5) : 0; // MW left
-    button_mask |= (mw_x > 0) ? (1 << 6) : 0; // MW right
+  0x1e, /* usb:4 -> linux:30 (KEY_A) -> qnum:30 */
+  0x30, /* usb:5 -> linux:48 (KEY_B) -> qnum:48 */
+  0x2e, /* usb:6 -> linux:46 (KEY_C) -> qnum:46 */
+  0x20, /* usb:7 -> linux:32 (KEY_D) -> qnum:32 */
+  0x12, /* usb:8 -> linux:18 (KEY_E) -> qnum:18 */
+  0x21, /* usb:9 -> linux:33 (KEY_F) -> qnum:33 */
+  0x22, /* usb:10 -> linux:34 (KEY_G) -> qnum:34 */
+  0x23, /* usb:11 -> linux:35 (KEY_H) -> qnum:35 */
+  0x17, /* usb:12 -> linux:23 (KEY_I) -> qnum:23 */
+  0x24, /* usb:13 -> linux:36 (KEY_J) -> qnum:36 */
+  0x25, /* usb:14 -> linux:37 (KEY_K) -> qnum:37 */
+  0x26, /* usb:15 -> linux:38 (KEY_L) -> qnum:38 */
+  0x32, /* usb:16 -> linux:50 (KEY_M) -> qnum:50 */
+  0x31, /* usb:17 -> linux:49 (KEY_N) -> qnum:49 */
+  0x18, /* usb:18 -> linux:24 (KEY_O) -> qnum:24 */
+  0x19, /* usb:19 -> linux:25 (KEY_P) -> qnum:25 */
+  0x10, /* usb:20 -> linux:16 (KEY_Q) -> qnum:16 */
+  0x13, /* usb:21 -> linux:19 (KEY_R) -> qnum:19 */
+  0x1f, /* usb:22 -> linux:31 (KEY_S) -> qnum:31 */
+  0x14, /* usb:23 -> linux:20 (KEY_T) -> qnum:20 */
+  0x16, /* usb:24 -> linux:22 (KEY_U) -> qnum:22 */
+  0x2f, /* usb:25 -> linux:47 (KEY_V) -> qnum:47 */
+  0x11, /* usb:26 -> linux:17 (KEY_W) -> qnum:17 */
+  0x2d, /* usb:27 -> linux:45 (KEY_X) -> qnum:45 */
+  0x15, /* usb:28 -> linux:21 (KEY_Y) -> qnum:21 */
+  0x2c, /* usb:29 -> linux:44 (KEY_Z) -> qnum:44 */
 
-    char buf[6];
+  0x2, /* usb:30 -> linux:2 (KEY_1) -> qnum:2 */
+  0x3, /* usb:31 -> linux:3 (KEY_2) -> qnum:3 */
+  0x4, /* usb:32 -> linux:4 (KEY_3) -> qnum:4 */
+  0x5, /* usb:33 -> linux:5 (KEY_4) -> qnum:5 */
+  0x6, /* usb:34 -> linux:6 (KEY_5) -> qnum:6 */
+  0x7, /* usb:35 -> linux:7 (KEY_6) -> qnum:7 */
+  0x8, /* usb:36 -> linux:8 (KEY_7) -> qnum:8 */
+  0x9, /* usb:37 -> linux:9 (KEY_8) -> qnum:9 */
+  0xa, /* usb:38 -> linux:10 (KEY_9) -> qnum:10 */
+  0xb, /* usb:39 -> linux:11 (KEY_0) -> qnum:11 */
 
-    Uint8 *msg = (Uint8 *) buf;
-    *msg++ = 5;
-    *msg++ = button_mask;
+  0x1c, /* usb:40 -> linux:28 (KEY_ENTER) -> qnum:28 */
+  0x1, /* usb:41 -> linux:1 (KEY_ESC) -> qnum:1 */
+  0xe, /* usb:42 -> linux:14 (KEY_BACKSPACE) -> qnum:14 */
+  0xf, /* usb:43 -> linux:15 (KEY_TAB) -> qnum:15 */
+  0x39, /* usb:44 -> linux:57 (KEY_SPACE) -> qnum:57 */
 
-    Uint16 *pos = (Uint16 *) msg;
-    *pos++ = SDL_SwapBE16(x);
-    *pos++ = SDL_SwapBE16(y);
+  0xc, /* usb:45 -> linux:12 (KEY_MINUS) -> qnum:12 */
+  0xd, /* usb:46 -> linux:13 (KEY_EQUAL) -> qnum:13 */
+  0x1a, /* usb:47 -> linux:26 (KEY_LEFTBRACE) -> qnum:26 */
+  0x1b, /* usb:48 -> linux:27 (KEY_RIGHTBRACE) -> qnum:27 */
 
-    return VNC_ToServer(vnc->socket, buf, 6);
+  0x2b, /* usb:49 -> linux:43 (KEY_BACKSLASH) -> qnum:43 */
+  0x2b, /* usb:50 -> linux:43 (KEY_BACKSLASH) -> qnum:43 */
+
+  0x27, /* usb:51 -> linux:39 (KEY_SEMICOLON) -> qnum:39 */
+  0x28, /* usb:52 -> linux:40 (KEY_APOSTROPHE) -> qnum:40 */
+  0x29, /* usb:53 -> linux:41 (KEY_GRAVE) -> qnum:41 */
+  0x33, /* usb:54 -> linux:51 (KEY_COMMA) -> qnum:51 */
+  0x34, /* usb:55 -> linux:52 (KEY_DOT) -> qnum:52 */
+  0x35, /* usb:56 -> linux:53 (KEY_SLASH) -> qnum:53 */
+
+  0x3a, /* usb:57 -> linux:58 (KEY_CAPSLOCK) -> qnum:58 */
+
+  0x3b, /* usb:58 -> linux:59 (KEY_F1) -> qnum:59 */
+  0x3c, /* usb:59 -> linux:60 (KEY_F2) -> qnum:60 */
+  0x3d, /* usb:60 -> linux:61 (KEY_F3) -> qnum:61 */
+  0x3e, /* usb:61 -> linux:62 (KEY_F4) -> qnum:62 */
+  0x3f, /* usb:62 -> linux:63 (KEY_F5) -> qnum:63 */
+  0x40, /* usb:63 -> linux:64 (KEY_F6) -> qnum:64 */
+  0x41, /* usb:64 -> linux:65 (KEY_F7) -> qnum:65 */
+  0x42, /* usb:65 -> linux:66 (KEY_F8) -> qnum:66 */
+  0x43, /* usb:66 -> linux:67 (KEY_F9) -> qnum:67 */
+  0x44, /* usb:67 -> linux:68 (KEY_F10) -> qnum:68 */
+  0x57, /* usb:68 -> linux:87 (KEY_F11) -> qnum:87 */
+  0x58, /* usb:69 -> linux:88 (KEY_F12) -> qnum:88 */
+
+  0x54, /* usb:70 -> SDL_SCANCODE_PRINTSCREEN -> qnum:84 - same as SYSREQ! */
+  0x46, /* usb:71 -> linux:70 (KEY_SCROLLLOCK) -> qnum:70 */
+  0xc6, /* usb:72 -> linux:119 (KEY_PAUSE) -> qnum:198 */
+  0xd2, /* usb:73 -> linux:110 (KEY_INSERT) -> qnum:210 */
+
+  0xc7, /* usb:74 -> linux:102 (KEY_HOME) -> qnum:199 */
+  0xc9, /* usb:75 -> linux:104 (KEY_PAGEUP) -> qnum:201 */
+  0xd3, /* usb:76 -> linux:111 (KEY_DELETE) -> qnum:211 */
+  0xcf, /* usb:77 -> linux:107 (KEY_END) -> qnum:207 */
+  0xd1, /* usb:78 -> linux:109 (KEY_PAGEDOWN) -> qnum:209 */
+  0xcd, /* usb:79 -> linux:106 (KEY_RIGHT) -> qnum:205 */
+  0xcb, /* usb:80 -> linux:105 (KEY_LEFT) -> qnum:203 */
+  0xd0, /* usb:81 -> linux:108 (KEY_DOWN) -> qnum:208 */
+  0xc8, /* usb:82 -> linux:103 (KEY_UP) -> qnum:200 */
+
+  0x45, /* usb:83 -> linux:69 (KEY_NUMLOCK) -> qnum:69 */
+
+  0xb5, /* usb:84 -> linux:98 (KEY_KPSLASH) -> qnum:181 */
+  0x37, /* usb:85 -> linux:55 (KEY_KPASTERISK) -> qnum:55 */
+  0x4a, /* usb:86 -> linux:74 (KEY_KPMINUS) -> qnum:74 */
+  0x4e, /* usb:87 -> linux:78 (KEY_KPPLUS) -> qnum:78 */
+  0x9c, /* usb:88 -> linux:96 (KEY_KPENTER) -> qnum:156 */
+  0x4f, /* usb:89 -> linux:79 (KEY_KP1) -> qnum:79 */
+  0x50, /* usb:90 -> linux:80 (KEY_KP2) -> qnum:80 */
+  0x51, /* usb:91 -> linux:81 (KEY_KP3) -> qnum:81 */
+  0x4b, /* usb:92 -> linux:75 (KEY_KP4) -> qnum:75 */
+  0x4c, /* usb:93 -> linux:76 (KEY_KP5) -> qnum:76 */
+  0x4d, /* usb:94 -> linux:77 (KEY_KP6) -> qnum:77 */
+  0x47, /* usb:95 -> linux:71 (KEY_KP7) -> qnum:71 */
+  0x48, /* usb:96 -> linux:72 (KEY_KP8) -> qnum:72 */
+  0x49, /* usb:97 -> linux:73 (KEY_KP9) -> qnum:73 */
+  0x52, /* usb:98 -> linux:82 (KEY_KP0) -> qnum:82 */
+  0x53, /* usb:99 -> linux:83 (KEY_KPDOT) -> qnum:83 */
+
+  0x56, /* usb:100 -> linux:86 (KEY_102ND) -> qnum:86 */
+  0xdd, /* usb:101 -> linux:127 (KEY_COMPOSE) -> qnum:221 */
+  0xde, /* usb:102 -> linux:116 (KEY_POWER) -> qnum:222 */
+  0x59, /* usb:103 -> linux:117 (KEY_KPEQUAL) -> qnum:89 */
+  0x5d, /* usb:104 -> linux:183 (KEY_F13) -> qnum:93 */
+  0x5e, /* usb:105 -> linux:184 (KEY_F14) -> qnum:94 */
+  0x5f, /* usb:106 -> linux:185 (KEY_F15) -> qnum:95 */
+  0x55, /* usb:107 -> linux:186 (KEY_F16) -> qnum:85 */
+  0x83, /* usb:108 -> linux:187 (KEY_F17) -> qnum:131 */
+  0xf7, /* usb:109 -> linux:188 (KEY_F18) -> qnum:247 */
+  0x84, /* usb:110 -> linux:189 (KEY_F19) -> qnum:132 */
+  0x5a, /* usb:111 -> linux:190 (KEY_F20) -> qnum:90 */
+  0x74, /* usb:112 -> linux:191 (KEY_F21) -> qnum:116 */
+  0xf9, /* usb:113 -> linux:192 (KEY_F22) -> qnum:249 */
+  0x6d, /* usb:114 -> linux:193 (KEY_F23) -> qnum:109 */
+  0x6f, /* usb:115 -> linux:194 (KEY_F24) -> qnum:111 */
+  0x64, /* usb:116 -> linux:134 (KEY_OPEN) -> qnum:100 */
+  0xf5, /* usb:117 -> linux:138 (KEY_HELP) -> qnum:245 */
+  0x9e, /* usb:118 -> linux:139 (KEY_MENU) -> qnum:158 */
+  0x8c, /* usb:119 -> linux:132 (KEY_FRONT) -> qnum:140 */
+  0xe8, /* usb:120 -> linux:128 (KEY_STOP) -> qnum:232 */
+  0x85, /* usb:121 -> linux:129 (KEY_AGAIN) -> qnum:133 */
+  0x87, /* usb:122 -> linux:131 (KEY_UNDO) -> qnum:135 */
+  0xbc, /* usb:123 -> linux:137 (KEY_CUT) -> qnum:188 */
+  0xf8, /* usb:124 -> linux:133 (KEY_COPY) -> qnum:248 */
+  0x65, /* usb:125 -> linux:135 (KEY_PASTE) -> qnum:101 */
+  0xc1, /* usb:126 -> linux:136 (KEY_FIND) -> qnum:193 */
+  0xa0, /* usb:127 -> linux:113 (KEY_MUTE) -> qnum:160 */
+  0xb0, /* usb:128 -> linux:115 (KEY_VOLUMEUP) -> qnum:176 */
+  0xae, /* usb:129 -> linux:114 (KEY_VOLUMEDOWN) -> qnum:174 */
+
+  // locking capslock, numlock und scrolllock, SDL2 says
+  // "not sure whether there's a reason to enable these" and doesn't define them
+  0, /* usb:130 -> linux:None (unnamed) -> qnum:None */
+  0, /* usb:131 -> linux:None (unnamed) -> qnum:None */
+  0, /* usb:132 -> linux:None (unnamed) -> qnum:None */
+
+  0x7e, /* usb:133 -> linux:121 (KEY_KPCOMMA) -> qnum:126 */
+  0, /* usb:134 -> SDL_SCANCODE_KP_EQUALSAS400 -> qnum:None */
+
+  // SDL_SCANCODE_INTERNATIONAL*:
+  0x73, /* usb:135 -> linux:89 (KEY_RO) -> qnum:115 */
+  0x70, /* usb:136 -> linux:93 (KEY_KATAKANAHIRAGANA) -> qnum:112 */
+  0x7d, /* usb:137 -> linux:124 (KEY_YEN) -> qnum:125 */
+  0x79, /* usb:138 -> linux:92 (KEY_HENKAN) -> qnum:121 */
+  0x7b, /* usb:139 -> linux:94 (KEY_MUHENKAN) -> qnum:123 */
+  0x5c, /* usb:140 -> linux:95 (KEY_KPJPCOMMA) -> qnum:92 */
+  0, /* usb:141 -> SDL_SCANCODE_INTERNATIONAL7 -> qnum:None */
+  0, /* usb:142 -> SDL_SCANCODE_INTERNATIONAL8 -> qnum:None */
+  0, /* usb:143 -> SDL_SCANCODE_INTERNATIONAL9 -> qnum:None */
+
+  // SDL_SCANCODE_LANG*:
+  0x72, /* usb:144 -> linux:122 (KEY_HANGEUL) -> qnum:114 */
+  0x71, /* usb:145 -> linux:123 (KEY_HANJA) -> qnum:113 */
+  0x78, /* usb:146 -> linux:90 (KEY_KATAKANA) -> qnum:120 */
+  0x77, /* usb:147 -> linux:91 (KEY_HIRAGANA) -> qnum:119 */
+  0x76, /* usb:148 -> linux:85 (KEY_ZENKAKUHANKAKU) -> qnum:118 */
+  0, /* usb:149 -> SDL_SCANCODE_LANG6 (reserved) -> qnum:None */
+  0, /* usb:150 -> SDL_SCANCODE_LANG7 (reserved) -> qnum:None */
+  0, /* usb:151 -> SDL_SCANCODE_LANG8 (reserved) -> qnum:None */
+  0, /* usb:152 -> SDL_SCANCODE_LANG9 (reserved) -> qnum:None */
+
+  // SDL_SCANCODE_ALTERASE etc:
+  0x94, // usb:153 -> SDL_SCANCODE_ALTERASE - KEY_ALTERASE
+  0x54, // usb:154 -> SDL_SCANCODE_SYSREQ -> same as print screen!
+  0xCA, // usb:155 -> SDL_SCANCODE_CANCEL - KEY_CANCEL
+  0, // usb:156 -> SDL_SCANCODE_CLEAR
+  0, // usb:157 -> SDL_SCANCODE_PRIOR
+  0, // usb:158 -> SDL_SCANCODE_RETURN2
+  0, // usb:159 -> SDL_SCANCODE_SEPARATOR
+  0, // usb:160 -> SDL_SCANCODE_OUT
+  0, // usb:161 -> SDL_SCANCODE_OPER
+  0, // usb:162 -> SDL_SCANCODE_CLEARAGAIN
+  0, // usb:163 -> SDL_SCANCODE_CRSEL
+  0, // usb:164 -> SDL_SCANCODE_EXSEL
+
+  // 165-175 is unused in SDL
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+
+  // lots of SDL_SCANCODE_KP stuff:
+  0, // usb:176 -> SDL_SCANCODE_KP_00
+  0, // usb:177 -> SDL_SCANCODE_KP_000
+  0, // usb:178 -> SDL_SCANCODE_THOUSANDSSEPARATOR
+  0, // usb:179 -> SDL_SCANCODE_DECIMALSEPARATOR
+  0, // usb:180 -> SDL_SCANCODE_CURRENCYUNIT
+  0, // usb:181 -> SDL_SCANCODE_CURRENCYSUBUNIT
+  0xF6, // usb:182 -> SDL_SCANCODE_KP_LEFTPAREN  -> qnum:246 - KEY_KPLEFTPAREN
+  0xFB, // usb:183 -> SDL_SCANCODE_KP_RIGHTPAREN -> qnum:251 - KEY_KPRIGHTPAREN
+  0, // usb:184 -> SDL_SCANCODE_KP_LEFTBRACE
+  0, // usb:185 -> SDL_SCANCODE_KP_RIGHTBRACE
+  0, // usb:186 -> SDL_SCANCODE_KP_TAB
+  0, // usb:187 -> SDL_SCANCODE_KP_BACKSPACE
+  0, // usb:188 -> SDL_SCANCODE_KP_A
+  0, // usb:189 -> SDL_SCANCODE_KP_B
+  0, // usb:190 -> SDL_SCANCODE_KP_C
+  0, // usb:191 -> SDL_SCANCODE_KP_D
+  0, // usb:192 -> SDL_SCANCODE_KP_E
+  0, // usb:193 -> SDL_SCANCODE_KP_F
+  0, // usb:194 -> SDL_SCANCODE_KP_XOR
+  0, // usb:195 -> SDL_SCANCODE_KP_POWER
+  0, // usb:196 -> SDL_SCANCODE_KP_PERCENT
+  0, // usb:197 -> SDL_SCANCODE_KP_LESS
+  0, // usb:198 -> SDL_SCANCODE_KP_GREATER
+  0, // usb:199 -> SDL_SCANCODE_KP_AMPERSAND
+  0, // usb:200 -> SDL_SCANCODE_KP_DBLAMPERSAND
+  0, // usb:201 -> SDL_SCANCODE_KP_VERTICALBAR
+  0, // usb:202 -> SDL_SCANCODE_KP_DBLVERTICALBAR
+  0, // usb:203 -> SDL_SCANCODE_KP_COLON
+  0, // usb:204 -> SDL_SCANCODE_KP_HASH
+  0, // usb:205 -> SDL_SCANCODE_KP_SPACE
+  0, // usb:206 -> SDL_SCANCODE_KP_AT
+  0, // usb:207 -> SDL_SCANCODE_KP_EXCLAM
+  0, // usb:208 -> SDL_SCANCODE_KP_MEMSTORE
+  0, // usb:209 -> SDL_SCANCODE_KP_MEMRECALL
+  0, // usb:210 -> SDL_SCANCODE_KP_MEMCLEAR
+  0, // usb:211 -> SDL_SCANCODE_KP_MEMADD
+  0, // usb:212 -> SDL_SCANCODE_KP_MEMSUBTRACT
+  0, // usb:213 -> SDL_SCANCODE_KP_MEMMULTIPLY
+  0, // usb:214 -> SDL_SCANCODE_KP_MEMDIVIDE
+  0xCE, // usb:215 -> SDL_SCANCODE_KP_PLUSMINUS - KEY_KPPLUSMINUS
+  0, // usb:216 -> SDL_SCANCODE_KP_CLEAR
+  0, // usb:217 -> SDL_SCANCODE_KP_CLEARENTRY
+  0, // usb:218 -> SDL_SCANCODE_KP_BINARY
+  0, // usb:219 -> SDL_SCANCODE_KP_OCTAL
+  0, // usb:220 -> SDL_SCANCODE_KP_DECIMAL
+  0, // usb:221 -> SDL_SCANCODE_KP_HEXADECIMAL
+
+  // unused:
+  0, /* usb:222 -> linux:None (unnamed) -> qnum:None */
+  0, /* usb:223 -> linux:None (unnamed) -> qnum:None */
+
+  0x1d, /* usb:224 -> linux:29 (KEY_LEFTCTRL) -> qnum:29 */
+  0x2a, /* usb:225 -> linux:42 (KEY_LEFTSHIFT) -> qnum:42 */
+  0x38, /* usb:226 -> linux:56 (KEY_LEFTALT) -> qnum:56 */
+  0xdb, /* usb:227 -> linux:125 (KEY_LEFTMETA) -> qnum:219 */
+  0x9d, /* usb:228 -> linux:97 (KEY_RIGHTCTRL) -> qnum:157 */
+  0x36, /* usb:229 -> linux:54 (KEY_RIGHTSHIFT) -> qnum:54 */
+  0xb8, /* usb:230 -> linux:100 (KEY_RIGHTALT) -> qnum:184 */
+  0xdc, /* usb:231 -> linux:126 (KEY_RIGHTMETA) -> qnum:220 */
+
+  // from here on, SDL_Scancode deviates from the USB standard
+  // (because the affected keys are usually implemented via HID consumer page)
+  // 232 - 256 are unused
+  0, 0, 0, 0, 0, 0, 0, 0, 0,    // 232 - 240 unused
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 241-250 unused
+  0, 0, 0, 0, 0, 0,             // 251-256 unused
+
+  0xb8, //  SDL_SCANCODE_MODE = 257,  // this seems to be the AltGr Key, so also map to KEY_RIGHTALT
+
+          // These values are mapped from usage page 0x0C (USB consumer page).
+  // used the output of keymap-gen code-map --lang=stdc keymaps.csv qnum qcode to match names
+  // furthermore, here the qcodes seem to match the Win32 DIK_ constants for the same keys
+  0x99,   //  SDL_SCANCODE_AUDIONEXT = 258, - KEY_NEXTSONG - Q_KEY_CODE_AUDIONEXT
+  0x90,   //  SDL_SCANCODE_AUDIOPREV = 259, - KEY_PREVIOUSSONG - Q_KEY_CODE_AUDIOPREV
+  0xA4,   //  SDL_SCANCODE_AUDIOSTOP = 260, - KEY_STOPCD - Q_KEY_CODE_AUDIOSTOP
+  0xA2,   //  SDL_SCANCODE_AUDIOPLAY = 261, - KEY_PLAYPAUSE - Q_KEY_CODE_AUDIOPLAY
+  0xA0,   //  SDL_SCANCODE_AUDIOMUTE = 262, - KEY_MUTE - Q_KEY_CODE_AUDIOMUTE
+  0xED,   //  SDL_SCANCODE_MEDIASELECT = 263, - Q_KEY_CODE_MEDIASELECT
+
+  0x82,   //  SDL_SCANCODE_WWW = 264, - KEY_WWW
+  0xEC,   //  SDL_SCANCODE_MAIL = 265, - KEY_MAIL - Q_KEY_CODE_MAIL
+  0xA1,   //  SDL_SCANCODE_CALCULATOR = 266, - KEY_CALC - Q_KEY_CODE_CALCULATOR
+  0xEB,   //  SDL_SCANCODE_COMPUTER = 267, - KEY_COMPUTER - Q_KEY_CODE_COMPUTER
+  0xE5,   //  SDL_SCANCODE_AC_SEARCH = 268, - KEY_SEARCH
+  0xB2,   //  SDL_SCANCODE_AC_HOME = 269, - KEY_HOMEPAGE - Q_KEY_CODE_AC_HOME
+  0xEA,   //  SDL_SCANCODE_AC_BACK = 270, - KEY_BACK - Q_KEY_CODE_AC_BACK
+  0xE9,   //  SDL_SCANCODE_AC_FORWARD = 271, - KEY_FORWARD - Q_KEY_CODE_AC_FORWARD
+  0xE8,   //  SDL_SCANCODE_AC_STOP = 272, - KEY_STOP - Q_KEY_CODE_STOP
+  0xE7,   //  SDL_SCANCODE_AC_REFRESH = 273, - KEY_REFRESH - Q_KEY_CODE_AC_REFRESH
+  0xE6,   //  SDL_SCANCODE_AC_BOOKMARKS = 274, - KEY_BOOKMARKS - Q_KEY_CODE_AC_BOOKMARKS
+
+          // These are values that Christian Walther added (for mac keyboard?).
+  0xCC,   //  SDL_SCANCODE_BRIGHTNESSDOWN = 275, - KEY_BRIGHTNESSDOWN
+  0xD4,   //  SDL_SCANCODE_BRIGHTNESSUP = 276, - KEY_BRIGHTNESSUP
+  0xD6,   //  SDL_SCANCODE_DISPLAYSWITCH = 277, - KEY_SWITCHVIDEOMODE - display mirroring/dual display switch, video mode switch
+  0xD7,   //  SDL_SCANCODE_KBDILLUMTOGGLE = 278, - KEY_KBDILLUMTOGGLE
+  0xD8,   //  SDL_SCANCODE_KBDILLUMDOWN = 279, - KEY_KBDILLUMDOWN
+  0xD9,   //  SDL_SCANCODE_KBDILLUMUP = 280, - KEY_KBDILLUMUP
+
+  0x6c,   //  SDL_SCANCODE_EJECT = 281, - KEY_EJECTCD
+
+  0xDF,   //  SDL_SCANCODE_SLEEP = 282, - KEY_SLEEP - Q_KEY_CODE_SLEEP
+
+  0x9f,   //  SDL_SCANCODE_APP1 = 283, - KEY_PROG1
+  0x97,   //  SDL_SCANCODE_APP2 = 284, - KEY_PROG2
+          // end of Walther-keys
+
+          // (additional media keys from consumer page)
+  0x98,   // SDL_SCANCODE_AUDIOREWIND = 285, - KEY_REWIND
+  0xB4,   // SDL_SCANCODE_AUDIOFASTFORWARD = 286, - KEY_FASTFORWARD
+
+      // the rest up to 511 are currently not named in SDL
+
+};
+
+Uint32 VNC_ToQemuKeynum(SDL_Keysym sym) {
+
+    /* https://github.com/rfbproto/rfbproto/blob/master/rfbproto.rst#74121qemu-extended-key-event-message
+     * says:
+     * > The keycode is the XT keycode that produced the keysym. An XT keycode
+     * > is an XT make scancode sequence encoded to fit in a single U32 quantity.
+     * > Single byte XT scancodes with a byte value less than 0x7f are encoded as is.
+     * > 2-byte XT scancodes whose first byte is 0xe0 and second byte is less
+     * > than 0x7f are encoded with the high bit of the first byte set.
+     *
+     * DG: However, I'm not sure that's 100% correct, and it's not enough to
+     *  map all SDL scancodes.
+     *  Luckily, SDL2 scancodes are based on USB Keyboard Usage IDs and qemu has
+     *  a tool to generate mappings (and show supported keys), so with that
+     *  (and some manual labor) I got map_sdl2_scancode_to_qnum[]
+     */
+    Uint32 sc = sym.scancode;
+    if(sc < sizeof(map_sdl2_scancode_to_qnum)/sizeof(map_sdl2_scancode_to_qnum[0]))
+        return map_sdl2_scancode_to_qnum[sym.scancode];
+
+    return 0; // invalid or unsupported scancode
 }
 
 int VNC_SendKeyEvent(VNC_Connection *vnc, SDL_bool pressed, SDL_Keysym sym) {
-    char buf[8];
+
     SDL_Keycode key = sym.sym;
 
-    SDL_bool shift = sym.mod & KMOD_SHIFT;
+    SDL_bool shift = (sym.mod & KMOD_SHIFT) != 0;
+    Uint32 keysym = VNC_TranslateKey(key, shift);
+    Uint32 qemuKeycode = 0;
 
+    if(vnc->qemu_keyevents_supported) {
+        qemuKeycode = VNC_ToQemuKeynum(sym);
+    }
+
+    char buf[12] = {0};
+    // if qemu key events are not supported, or we couldn't map the SDL scancode,
+    // send a normal key event message
+    if(qemuKeycode == 0) {
+
+        if(keysym == XK_VoidSymbol) {
+            // couldn't map the key => nothing to send
+            return 0;
+        }
+
+        Uint8 *msg = (Uint8 *) buf;
+        *msg++ = 4;
+        *msg++ = pressed;
+        msg += 2; // skip padding
+
+        *(Uint32 *) msg = SDL_SwapBE32(keysym);
+
+        return VNC_ToServer(vnc->socket, buf, 8);
+    }
+
+    /* QEMU Extended Key Event Message:
+     * U8  message-type (255)
+     * U8  submessage-type (0)
+     * U16 down-flag
+     * U32 keysym // like in regular KeyEvent message
+     * U32 keycode // XT/qemu keycode
+     */
     Uint8 *msg = (Uint8 *) buf;
-    *msg++ = 4;
-    *msg++ = pressed;
-    msg += 2;
+    *msg++ = 255; // message-type (QEMU Client Message)
+    *msg++ = 0;   // submessage-type (extended key event)
+    *msg++ = 0;   // first byte of down-flag
+    *msg++ = pressed; // second byte of down-flag
+    *(Uint32 *) msg = SDL_SwapBE32(keysym); // "classic" VNC/X11 keysym
+    msg += 4;
+    *(Uint32 *) msg = SDL_SwapBE32(qemuKeycode); // XT/qemu keycode
 
-    Uint32 *key_p = (Uint32 *) msg;
-    *key_p = SDL_SwapBE32(VNC_TranslateKey(key, shift));
-
-    return VNC_ToServer(vnc->socket, buf, 8);
+    return VNC_ToServer(vnc->socket, buf, 12);
 }
 
 SDL_Window *VNC_CreateWindowForConnection(VNC_Connection *vnc, char *title,
