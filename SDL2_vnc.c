@@ -35,7 +35,9 @@ typedef enum {
     TRLE = 15,
     ZRLE = 16,
 
-    PSEUDO_CONTINUOUS_UPDATES = 150,
+    // https://vncdotool.readthedocs.io/en/0.8.0/rfbproto.html#encodings
+    // says this should be -313
+    PSEUDO_CONTINUOUS_UPDATES = -313,
     PSEUDO_CURSOR = -239,
     PSEUDO_DESKTOP_SIZE = -223
 } VNC_RectangleEncodingMethod;
