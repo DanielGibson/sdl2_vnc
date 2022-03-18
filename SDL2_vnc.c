@@ -760,17 +760,29 @@ int VNC_SendPointerEvent(VNC_Connection *vnc, Uint32 buttons,
 
 
 Uint32 VNC_TranslateKey(SDL_Keycode key, SDL_bool shift) {
+    // printable ASCII and Latin-1 High-ASCII keys are the same
+    // in SDL_Keycode and XK_* (both use the corresponding Unicode values)
+    if(key < 0xFF) {
+        if((key >= ' ' && key <= '~') || (key >= 0xA0)) {
+            // take care of shifted letters
+            if( shift && (  (key >= SDLK_a && key <= SDLK_z)
+                         || (key >= 0xC0 && key <= 0xDE) )  ) {
+                key -= 32;
+            }
+            return key;
+        }
+    }
+
     switch (key) {
-        case SDLK_0: return XK_0;
-        case SDLK_1: return XK_1;
-        case SDLK_2: return XK_2;
-        case SDLK_3: return XK_3;
-        case SDLK_4: return XK_4;
-        case SDLK_5: return XK_5;
-        case SDLK_6: return XK_6;
-        case SDLK_7: return XK_7;
-        case SDLK_8: return XK_8;
-        case SDLK_9: return XK_9;
+        case SDLK_UNKNOWN: return XK_VoidSymbol;
+
+        case SDLK_RETURN: return XK_Return;
+        case SDLK_ESCAPE: return XK_Escape;
+        case SDLK_BACKSPACE: return XK_BackSpace;
+        case SDLK_TAB: return XK_Tab;
+        // the other keycodes around here are handled in the ASCII case above
+
+        case SDLK_CAPSLOCK: return XK_Caps_Lock;
 
         case SDLK_F1: return XK_F1;
         case SDLK_F2: return XK_F2;
@@ -784,6 +796,43 @@ Uint32 VNC_TranslateKey(SDL_Keycode key, SDL_bool shift) {
         case SDLK_F10: return XK_F10;
         case SDLK_F11: return XK_F11;
         case SDLK_F12: return XK_F12;
+
+        case SDLK_PRINTSCREEN: return XK_Print;
+        case SDLK_SCROLLLOCK: return XK_Scroll_Lock;
+        case SDLK_PAUSE: return XK_Pause;
+        case SDLK_INSERT: return XK_Insert;
+        case SDLK_HOME: return XK_Home;
+        case SDLK_PAGEUP: return XK_Page_Up;
+        case SDLK_DELETE: return XK_Delete;
+        case SDLK_END: return XK_End;
+        case SDLK_PAGEDOWN: return XK_Page_Down;
+        case SDLK_RIGHT: return XK_Right;
+        case SDLK_LEFT: return XK_Left;
+        case SDLK_DOWN: return XK_Down;
+        case SDLK_UP: return XK_Up;
+
+        case SDLK_NUMLOCKCLEAR: return XK_Num_Lock;
+        case SDLK_KP_DIVIDE: return XK_KP_Divide;
+        case SDLK_KP_MULTIPLY: return XK_KP_Multiply;
+        case SDLK_KP_MINUS: return XK_KP_Subtract;
+        case SDLK_KP_PLUS: return XK_KP_Add;
+        case SDLK_KP_ENTER: return XK_KP_Enter;
+        case SDLK_KP_1: return XK_KP_1;
+        case SDLK_KP_2: return XK_KP_2;
+        case SDLK_KP_3: return XK_KP_3;
+        case SDLK_KP_4: return XK_KP_4;
+        case SDLK_KP_5: return XK_KP_5;
+        case SDLK_KP_6: return XK_KP_6;
+        case SDLK_KP_7: return XK_KP_7;
+        case SDLK_KP_8: return XK_KP_8;
+        case SDLK_KP_9: return XK_KP_9;
+        case SDLK_KP_0: return XK_KP_0;
+        case SDLK_KP_COMMA: return XK_KP_Separator;
+        case SDLK_KP_PERIOD: return XK_period;
+
+        case SDLK_APPLICATION: return XK_Menu; // compose or windows context menu
+        // TODO: SDLK_POWER? (more of a status flag, says SDL)
+        case SDLK_KP_EQUALS: return XK_KP_Equal;
         case SDLK_F13: return XK_F13;
         case SDLK_F14: return XK_F14;
         case SDLK_F15: return XK_F15;
@@ -796,81 +845,72 @@ Uint32 VNC_TranslateKey(SDL_Keycode key, SDL_bool shift) {
         case SDLK_F22: return XK_F22;
         case SDLK_F23: return XK_F23;
         case SDLK_F24: return XK_F24;
-
-        case SDLK_a: return shift ? XK_A : XK_a;
-        case SDLK_b: return shift ? XK_B : XK_b;
-        case SDLK_c: return shift ? XK_C : XK_c;
-        case SDLK_d: return shift ? XK_D : XK_d;
-        case SDLK_e: return shift ? XK_E : XK_e;
-        case SDLK_f: return shift ? XK_F : XK_f;
-        case SDLK_g: return shift ? XK_G : XK_g;
-        case SDLK_h: return shift ? XK_H : XK_h;
-        case SDLK_i: return shift ? XK_I : XK_i;
-        case SDLK_j: return shift ? XK_J : XK_j;
-        case SDLK_k: return shift ? XK_K : XK_k;
-        case SDLK_l: return shift ? XK_L : XK_l;
-        case SDLK_m: return shift ? XK_M : XK_m;
-        case SDLK_n: return shift ? XK_N : XK_n;
-        case SDLK_o: return shift ? XK_O : XK_o;
-        case SDLK_p: return shift ? XK_P : XK_p;
-        case SDLK_q: return shift ? XK_Q : XK_q;
-        case SDLK_r: return shift ? XK_R : XK_r;
-        case SDLK_s: return shift ? XK_S : XK_s;
-        case SDLK_t: return shift ? XK_T : XK_t;
-        case SDLK_u: return shift ? XK_U : XK_u;
-        case SDLK_v: return shift ? XK_V : XK_v;
-        case SDLK_w: return shift ? XK_W : XK_w;
-        case SDLK_x: return shift ? XK_X : XK_x;
-        case SDLK_y: return shift ? XK_Y : XK_y;
-        case SDLK_z: return shift ? XK_Z : XK_z;
-
-        case SDLK_SPACE: return XK_space;
-        case SDLK_QUOTE: return XK_apostrophe;
-        case SDLK_BACKSLASH: return XK_backslash;
-        case SDLK_COMMA: return XK_comma;
-        case SDLK_AMPERSAND: return XK_ampersand;
-        case SDLK_ASTERISK: return XK_asterisk;
-        case SDLK_AT: return XK_at;
-        case SDLK_CARET: return XK_asciicircum;
-        case SDLK_COLON: return XK_colon;
-        case SDLK_DOLLAR: return XK_dollar;
-        case SDLK_EXCLAIM: return XK_exclam;
-        case SDLK_GREATER: return XK_greater;
-        case SDLK_HASH: return XK_numbersign;
-        case SDLK_LEFTPAREN: return XK_parenleft;
-        case SDLK_LESS: return XK_less;
-        case SDLK_PERCENT: return XK_percent;
-        case SDLK_PLUS: return XK_plus;
-        case SDLK_QUESTION: return XK_question;
-        case SDLK_QUOTEDBL: return XK_quotedbl;
-        case SDLK_RIGHTPAREN: return XK_parenright;
-        case SDLK_UNDERSCORE: return XK_underscore;
-        case SDLK_EQUALS: return XK_equal;
-        case SDLK_BACKQUOTE: return XK_grave;
-        case SDLK_LEFTBRACKET: return XK_bracketleft;
-        case SDLK_RIGHTBRACKET: return XK_bracketright;
-        case SDLK_PERIOD: return XK_period;
-        case SDLK_SEMICOLON: return XK_semicolon;
-        case SDLK_SLASH: return XK_slash;
-
-        case SDLK_BACKSPACE: return XK_BackSpace;
-        case SDLK_CAPSLOCK: return XK_Caps_Lock;
-        case SDLK_NUMLOCKCLEAR: return XK_Num_Lock;
-        case SDLK_SCROLLLOCK: return XK_Scroll_Lock;
-        case SDLK_DELETE: return XK_Delete;
-        case SDLK_INSERT: return XK_Insert;
-        case SDLK_ESCAPE: return XK_Escape;
         case SDLK_EXECUTE: return XK_Execute;
-        case SDLK_FIND: return XK_Find;
         case SDLK_HELP: return XK_Help;
+        case SDLK_MENU: return XK_Menu;
+        case SDLK_SELECT: return XK_Select;
+        case SDLK_STOP: return XK_Cancel;
         case SDLK_AGAIN: return XK_Redo;
         case SDLK_UNDO: return XK_Undo;
-        case SDLK_MENU: return XK_Menu;
-        case SDLK_RETURN: return XK_Return;
-        case SDLK_SEPARATOR: return XK_KP_Separator;
-        case SDLK_STOP: return XK_Cancel;
+        //TODO: SDLK_CUT - maybe use XF86XK_Cut etc? does vnc support those?
+        case SDLK_COPY: return XK_3270_Copy; // TODO: really?
+        // TODO: SDLK_PASTE
+        case SDLK_FIND: return XK_Find;
+        // TODO: SDLK_MUTE, SDLK_VOLUMEUP, SDLK_VOLUMEDOWN - also XF86K_*
+        // TODO: SDLK_KP_EQUALSAS400 wtf is a AS/400 keyboard
+
+        case SDLK_ALTERASE: return XK_3270_EraseInput; // TODO: really?
         case SDLK_SYSREQ: return XK_Sys_Req;
-        case SDLK_TAB: return XK_Tab;
+        case SDLK_CANCEL: return XK_Cancel;
+        case SDLK_CLEAR: return XK_Clear;
+        case SDLK_PRIOR: return XK_Prior;
+        // TODO: SDLK_RETURN2, SDLK_SEPARATOR ("Keyboard Separator" - probably not XK_KP_Separator)
+        // TODO: SDLK_OUT, SDLK_OPER, SDLK_CLEARAGAIN
+        case SDLK_CRSEL: return XK_3270_CursorSelect; // TODO: really?
+        case SDLK_EXSEL: return XK_3270_ExSelect; // TODO: really?
+
+        // TODO: SDLK_KP_00, SDLK_KP_000, SDLK_THOUSANDSSEPARATOR
+        case SDLK_DECIMALSEPARATOR: return XK_decimalpoint;
+        case SDLK_CURRENCYUNIT: return XK_currency;
+        case SDLK_CURRENCYSUBUNIT: return XK_cent; // TODO: maybe not *exactly* the same
+
+        // there sure are a lot of keypad keys that don't really exist..
+        case SDLK_KP_LEFTPAREN: return XK_parenleft;
+        case SDLK_KP_RIGHTPAREN: return XK_parenright;
+        case SDLK_KP_LEFTBRACE: return XK_braceleft;
+        case SDLK_KP_RIGHTBRACE: return XK_braceright;
+
+        case SDLK_KP_TAB: return XK_KP_Tab;
+        case SDLK_KP_BACKSPACE: return XK_BackSpace; // TODO: XK_KP_Delete?
+
+        case SDLK_KP_A: return XK_a;
+        case SDLK_KP_B: return XK_b;
+        case SDLK_KP_C: return XK_c;
+        case SDLK_KP_D: return XK_d;
+        case SDLK_KP_E: return XK_e;
+        case SDLK_KP_F: return XK_f;
+
+        // TODO: SDLK_KP_XOR
+        case SDLK_KP_POWER: return XK_asciicircum;
+        case SDLK_KP_PERCENT: return XK_percent;
+        case SDLK_KP_LESS: return XK_less;
+        case SDLK_KP_GREATER: return XK_greater;
+        case SDLK_KP_AMPERSAND: return XK_ampersand;
+        // TODO: SDLK_KP_DBLAMPERSAND - maybe send two events?
+        case SDLK_KP_VERTICALBAR: return XK_bar;
+        // TODO: SDLK_KP_DBLVERTICALBAR - maybe send two events?
+        case SDLK_KP_COLON: return XK_colon;
+        case SDLK_KP_HASH: return XK_numbersign;
+        case SDLK_KP_SPACE: return XK_KP_Space;
+        case SDLK_KP_AT: return XK_at;
+        case SDLK_KP_EXCLAM: return XK_exclam;
+        // TODO: SDLK_KP_MEMSTORE, SDLK_KP_MEMRECALL, SDLK_KP_MEMCLEAR,
+        //       SDLK_KP_MEMADD, SDLK_KP_MEMSUBTRACT, SDLK_KP_MEMMULTIPLY, SDLK_KP_MEMDIVIDE
+        case SDLK_KP_PLUSMINUS: return XK_plusminus;
+        case SDLK_KP_CLEAR: return XK_Clear;
+        case SDLK_KP_CLEARENTRY: return XK_Clear;
+        // TODO: SDLK_KP_BINARY, SDLK_KP_OCTAL, SDLK_KP_HEXADECIMAL
+        case SDLK_KP_DECIMAL: return XK_KP_Decimal; // TODO: not sure about this
 
         case SDLK_LALT: return XK_Alt_L;
         case SDLK_RALT: return XK_Alt_R;
@@ -881,145 +921,41 @@ Uint32 VNC_TranslateKey(SDL_Keycode key, SDL_bool shift) {
         case SDLK_LSHIFT: return XK_Shift_L;
         case SDLK_RSHIFT: return XK_Shift_R;
 
-        case SDLK_KP_0: return XK_KP_0;
-        case SDLK_KP_1: return XK_KP_1;
-        case SDLK_KP_2: return XK_KP_2;
-        case SDLK_KP_3: return XK_KP_3;
-        case SDLK_KP_4: return XK_KP_4;
-        case SDLK_KP_5: return XK_KP_5;
-        case SDLK_KP_6: return XK_KP_6;
-        case SDLK_KP_7: return XK_KP_7;
-        case SDLK_KP_8: return XK_KP_8;
-        case SDLK_KP_9: return XK_KP_9;
+        case SDLK_MODE: return XK_ISO_Level3_Shift; // apparently this is supposed to be the AltGr key
 
-        case SDLK_KP_A: return XK_a;
-        case SDLK_KP_B: return XK_b;
-        case SDLK_KP_C: return XK_c;
-        case SDLK_KP_D: return XK_d;
-        case SDLK_KP_E: return XK_e;
-        case SDLK_KP_F: return XK_f;
+/*      TODO: look at XF86keysym.h
+        case SDLK_AUDIONEXT: return ;
+        case SDLK_AUDIOPREV: return ;
+        case SDLK_AUDIOSTOP: return ;
+        case SDLK_AUDIOPLAY: return ;
+        case SDLK_AUDIOMUTE: return ;
+        case SDLK_MEDIASELECT return ;
+        case SDLK_WWW: return ;
+        case SDLK_MAIL: return ;
+        case SDLK_CALCULATOR: return ;
+        case SDLK_COMPUTER: return ;
+        case SDLK_AC_SEARCH: return ;
+        case SDLK_AC_HOME: return ;
+        case SDLK_AC_BACK: return ;
+        case SDLK_AC_FORWARD: return ;
+        case SDLK_AC_STOP: return ;
+        case SDLK_AC_REFRESH: return ;
+        case SDLK_AC_BOOKMARKS: return ;
 
-        case SDLK_KP_AMPERSAND: return XK_ampersand;
-        case SDLK_KP_AT: return XK_at;
-        case SDLK_KP_COLON: return XK_colon;
-        case SDLK_KP_COMMA: return XK_comma;
-        case SDLK_KP_EXCLAM: return XK_exclam;
-        case SDLK_KP_GREATER: return XK_greater;
-        case SDLK_KP_LESS: return XK_less;
-        case SDLK_KP_HASH: return XK_numbersign;
-        case SDLK_KP_LEFTBRACE: return XK_braceleft;
-        case SDLK_KP_RIGHTBRACE: return XK_braceright;
-        case SDLK_KP_LEFTPAREN: return XK_parenleft;
-        case SDLK_KP_RIGHTPAREN: return XK_parenright;
-        case SDLK_KP_PERCENT: return XK_percent;
-        case SDLK_KP_PERIOD: return XK_period;
-        case SDLK_KP_PLUSMINUS: return XK_plusminus;
-        case SDLK_KP_POWER: return XK_asciicircum;
-        case SDLK_KP_VERTICALBAR: return XK_bar;
+        case SDLK_BRIGHTNESSDOWN: return ;
+        case SDLK_BRIGHTNESSUP: return ;
+        case SDLK_DISPLAYSWITCH: return ;
+        case SDLK_KBDILLUMTOGGLE: return ;
+        case SDLK_KBDILLUMDOWN: return ;
+        case SDLK_KBDILLUMUP: return ;
+        case SDLK_EJECT: return ;
+        case SDLK_SLEEP: return ;
+        case SDLK_APP1: return ;
+        case SDLK_APP2: return ;
 
-        case SDLK_KP_MINUS: return XK_KP_Subtract;
-        case SDLK_KP_MULTIPLY: return XK_KP_Multiply;
-        case SDLK_KP_DECIMAL: return XK_KP_Decimal;
-        case SDLK_KP_DIVIDE: return XK_KP_Divide;
-        case SDLK_KP_EQUALS: return XK_KP_Equal;
-        case SDLK_KP_PLUS: return XK_KP_Add;
-
-        case SDLK_KP_SPACE: return XK_KP_Space;
-        case SDLK_KP_TAB: return XK_KP_Tab;
-        case SDLK_KP_BACKSPACE: return XK_BackSpace;
-        case SDLK_KP_CLEAR: return XK_Clear;
-        case SDLK_KP_CLEARENTRY: return XK_Clear;
-        case SDLK_KP_ENTER: return XK_KP_Enter;
-
-        case SDLK_CURRENCYUNIT: return XK_currency;
-        case SDLK_DECIMALSEPARATOR: return XK_decimalpoint;
-
-        case SDLK_SELECT: return XK_Select;
-        case SDLK_CRSEL: return XK_3270_CursorSelect;
-        case SDLK_EXSEL: return XK_3270_ExSelect;
-        case SDLK_PRINTSCREEN: return XK_3270_PrintScreen;
-
-        case SDLK_UP: return XK_Up;
-        case SDLK_DOWN: return XK_Down;
-
-        case SDLK_HOME: return XK_Home;
-        case SDLK_END: return XK_End;
-        case SDLK_PAGEDOWN: return XK_Page_Down;
-        case SDLK_PAGEUP: return XK_Page_Up;
-        case SDLK_PRIOR: return XK_Prior;
-
-        case SDLK_COPY: return XK_3270_Copy;
-        case SDLK_PAUSE: return XK_Pause;
-
-        case SDLK_CANCEL: return XK_Cancel;
-        case SDLK_CLEAR: return XK_Clear;
-
-        case SDLK_ALTERASE: return XK_3270_EraseInput;
-
-        case SDLK_UNKNOWN:
-
-        case SDLK_EJECT:
-
-        case SDLK_OPER:
-        case SDLK_OUT:
-
-        case SDLK_CURRENCYSUBUNIT:
-        case SDLK_KP_00:
-        case SDLK_KP_000:
-        case SDLK_KP_BINARY:
-        case SDLK_KP_HEXADECIMAL:
-        case SDLK_KP_OCTAL:
-        case SDLK_KP_DBLAMPERSAND:
-        case SDLK_KP_EQUALSAS400:
-        case SDLK_KP_XOR:
-
-        case SDLK_THOUSANDSSEPARATOR:
-
-        case SDLK_KP_MEMADD:
-        case SDLK_KP_MEMCLEAR:
-        case SDLK_KP_MEMDIVIDE:
-        case SDLK_KP_MEMMULTIPLY:
-        case SDLK_KP_MEMRECALL:
-        case SDLK_KP_MEMSTORE:
-        case SDLK_KP_MEMSUBTRACT:
-
-        case SDLK_CLEARAGAIN:
-        case SDLK_CUT:
-
-        case SDLK_COMPUTER:
-        case SDLK_CALCULATOR:
-        case SDLK_DISPLAYSWITCH:
-        case SDLK_MAIL: 
-        case SDLK_MEDIASELECT:
-        case SDLK_WWW:
-
-        case SDLK_POWER:
-        case SDLK_SLEEP:
-
-        case SDLK_AUDIOMUTE:
-        case SDLK_AUDIONEXT:
-        case SDLK_AUDIOPLAY:
-        case SDLK_AUDIOPREV:
-        case SDLK_AUDIOSTOP:
-
-        case SDLK_AC_BACK:
-        case SDLK_AC_BOOKMARKS:
-        case SDLK_AC_FORWARD:
-        case SDLK_AC_SEARCH:
-        case SDLK_AC_REFRESH:
-        case SDLK_AC_STOP:
-        case SDLK_AC_HOME:
-
-        case SDLK_BRIGHTNESSUP:
-        case SDLK_BRIGHTNESSDOWN:
-        case SDLK_VOLUMEUP:
-        case SDLK_VOLUMEDOWN:
-
-        case SDLK_KBDILLUMDOWN:
-        case SDLK_KBDILLUMTOGGLE:
-        case SDLK_KBDILLUMUP:
-
-        case SDLK_APPLICATION:
+        case SDLK_AUDIOREWIND: return ;
+        case SDLK_AUDIOFASTFORWARD: return ;
+*/
         default:
             return XK_VoidSymbol;
     }
