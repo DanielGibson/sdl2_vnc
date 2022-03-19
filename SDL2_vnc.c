@@ -606,7 +606,7 @@ int VNC_UpdateLoop(void *data) {
     disconnect_event.type = VNC_SHUTDOWN;
     disconnect_event.user.code = 0;
 
-    while (vnc->thread) {
+    while (vnc->thread_keep_running) {
         char buf[1];
         int res = VNC_FromServer(vnc->socket, buf, 1);
 
@@ -724,6 +724,7 @@ VNC_Result VNC_InitConnection(VNC_Connection *vnc, char *host, Uint16 port,
     VNC_SendInitialFramebufferUpdateRequest(vnc);
 
     vnc->surface = VNC_CreateSurfaceForServer(&vnc->server_details);
+    vnc->thread_keep_running = SDL_TRUE;
     vnc->thread = VNC_CreateUpdateThread(vnc);
 
     return 0;

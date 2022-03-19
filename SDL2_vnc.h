@@ -199,6 +199,11 @@ typedef struct {
     unsigned fps;
 
     /**
+     * VNC_UpdateLoop() terminates if this is false
+     */
+    SDL_bool thread_keep_running;
+
+    /**
      * Server allows using QEMU Extended Key Events
      */
     SDL_bool qemu_keyevents_supported;
